@@ -7,7 +7,6 @@ import {
   Code2,
   Command,
   Fingerprint,
-  Globe,
   Network,
   ShieldCheck,
   Sparkles,
@@ -35,29 +34,59 @@ const stagger = {
 
 export default function LandingPage() {
   const [scrolled, setScrolled] = useState(false);
-   
   const reduceMotion = useReducedMotion();
-  const raf = useRef<number | null>(null);
 
- useEffect(() => {
-  const onScroll = () => setScrolled(window.scrollY > 18);
+  const themeTimer = useRef<number | null>(null);
 
-  const onMove = (e: MouseEvent) => {
-    // no React state, just CSS vars
-    document.documentElement.style.setProperty("--mx", `${e.clientX}px`);
-    document.documentElement.style.setProperty("--my", `${e.clientY}px`);
-  };
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 18);
 
-  onScroll();
-  window.addEventListener("scroll", onScroll, { passive: true });
-  window.addEventListener("mousemove", onMove, { passive: true });
+    const onMove = (e: MouseEvent) => {
+      // ✅ no React setState -> no rerender on mousemove
+      document.documentElement.style.setProperty("--mx", `${e.clientX}px`);
+      document.documentElement.style.setProperty("--my", `${e.clientY}px`);
+    };
 
-  return () => {
-    window.removeEventListener("scroll", onScroll);
-    window.removeEventListener("mousemove", onMove);
-  };
-}, []);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("mousemove", onMove, { passive: true });
 
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("mousemove", onMove);
+    };
+  }, []);
+
+  useEffect(() => {
+    // ✅ INP fix: when ThemeToggle flips .dark on <html>, temporarily disable transitions
+    const root = document.documentElement;
+
+    const kickThemeFreeze = () => {
+      root.classList.add("theme-changing");
+      if (themeTimer.current) window.clearTimeout(themeTimer.current);
+
+      themeTimer.current = window.setTimeout(() => {
+        root.classList.remove("theme-changing");
+        themeTimer.current = null;
+      }, 220);
+    };
+
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === "attributes" && m.attributeName === "class") {
+          kickThemeFreeze();
+          break;
+        }
+      }
+    });
+
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+
+    return () => {
+      observer.disconnect();
+      if (themeTimer.current) window.clearTimeout(themeTimer.current);
+    };
+  }, []);
 
   const navItems = useMemo(
     () => [
@@ -75,13 +104,12 @@ export default function LandingPage() {
         <div className="absolute inset-0 hive-mesh-bg" />
         <div className="absolute inset-0 hive-grid-mask" />
 
-       {!reduceMotion && (
-  <div
-    aria-hidden
-    className="pointer-events-none absolute inset-0 transition-opacity duration-700 hive-pointer-glow"
-  />
-)}
-
+        {!reduceMotion && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 hive-pointer-glow transition-opacity duration-700"
+          />
+        )}
       </div>
 
       {/* Nav */}
@@ -105,7 +133,7 @@ export default function LandingPage() {
               <a
                 key={i.href}
                 href={i.href}
-                className="rounded-full px-5 py-1.5 text-sm font-medium text-muted-foreground transition-all hover:bg-foreground/5 hover:text-foreground"
+                className="rounded-full px-5 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
               >
                 {i.label}
               </a>
@@ -114,6 +142,7 @@ export default function LandingPage() {
 
           <div className="flex items-center gap-3">
             <ThemeToggle />
+
             <Button variant="ghost" className="hidden rounded-full sm:flex">
               Login
             </Button>
@@ -129,7 +158,7 @@ export default function LandingPage() {
       <div className="pt-[92px] md:pt-[104px]" />
 
       {/* HERO */}
-      <section className="relative flex flex-col items-center px-6 pb-20 pt-14 md:pt-24 text-center">
+      <section className="relative flex flex-col items-center px-6 pb-20 pt-14 text-center md:pt-24">
         <motion.div variants={stagger} initial="hidden" animate="show" className="max-w-5xl">
           <motion.div variants={fadeUp}>
             <Badge
@@ -155,8 +184,8 @@ export default function LandingPage() {
             variants={fadeUp}
             className="mx-auto mt-10 max-w-2xl text-lg leading-relaxed text-muted-foreground sm:text-xl"
           >
-            Provision infrastructure, manage RBAC, and monitor real-time tenant flows from
-            one high-performance cockpit. Built on Next.js + Prisma.
+            Provision infrastructure, manage RBAC, and monitor real-time tenant flows from one
+            high-performance cockpit. Built on Next.js + Prisma.
           </motion.p>
 
           <motion.div variants={fadeUp} className="mt-12 flex flex-wrap justify-center gap-4">
@@ -231,12 +260,14 @@ export default function LandingPage() {
         </motion.div>
       </section>
 
-      {/* PLATFORM / BENTO */}
+      {/* PLATFORM */}
       <section id="platform" className="border-y border-border/50 bg-muted/5 px-6 py-24">
         <div className="mx-auto max-w-7xl">
           <div className="mb-16">
             <h2 className="text-4xl font-bold tracking-tighter sm:text-5xl">Infrastructure as Logic</h2>
-            <p className="mt-4 text-lg text-muted-foreground">Ship enterprise features without the boilerplate.</p>
+            <p className="mt-4 text-lg text-muted-foreground">
+              Ship enterprise features without the boilerplate.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-6 md:grid-cols-12">
@@ -384,11 +415,6 @@ function CheckIcon() {
   );
 }
 
-/**
- * ✅ FIXED:
- * - icon is typed as a ReactElement that accepts className
- * - cloneElement is now type-safe and will compile on `next build`
- */
 type IconEl = React.ReactElement<{ className?: string }>;
 
 function BentoCard({
@@ -492,9 +518,5 @@ function Step({ num, title, body }: { num: string; title: string; body: string }
 }
 
 function Pill({ text }: { text: string }) {
-  return (
-    <span className="rounded-full border border-border/60 bg-background/35 px-3 py-1">
-      {text}
-    </span>
-  );
+  return <span className="rounded-full border border-border/60 bg-background/35 px-3 py-1">{text}</span>;
 }

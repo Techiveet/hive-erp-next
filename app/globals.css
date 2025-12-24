@@ -2,18 +2,12 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* Tailwind v4 custom variant */
 @custom-variant dark (&:is(.dark *));
 
-/* -------------------------------------------------------------------------- */
-/* Theme tokens (Tailwind v4) */
-/* -------------------------------------------------------------------------- */
 @theme inline {
-  /* Brand */
   --color-brand-primary: oklch(0.70 0.19 162);
   --color-brand-secondary: oklch(0.65 0.15 220);
 
-  /* Design tokens */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -23,9 +17,7 @@
   --color-ring: var(--ring);
 }
 
-/* -------------------------------------------------------------------------- */
-/* Tokens */
-/* -------------------------------------------------------------------------- */
+/* ------------------------------ Tokens ------------------------------ */
 :root {
   --background: oklch(1 0 0);
   --foreground: oklch(0.12 0 0);
@@ -37,7 +29,7 @@
   --border: oklch(0.92 0 0);
   --ring: oklch(0.70 0.19 162 / 0.4);
 
-  /* For hive-pointer-glow defaults */
+  /* pointer glow defaults */
   --mx: 50%;
   --my: 20%;
 }
@@ -54,11 +46,9 @@
   --ring: oklch(0.98 0 0 / 0.2);
 }
 
-/* -------------------------------------------------------------------------- */
-/* Base */
-/* -------------------------------------------------------------------------- */
+/* ------------------------------ Base ------------------------------ */
 @layer base {
-  /* ✅ INP fix: NO global transition-colors on * */
+  /* ✅ INP FIX: remove global transition from * */
   * {
     @apply border-border outline-ring/30;
   }
@@ -73,7 +63,7 @@
     font-feature-settings: "cv02", "cv03", "cv04", "ss01";
   }
 
-  /* ✅ keep transitions scoped (buttons/links/etc) */
+  /* ✅ keep transitions only where needed */
   a,
   button,
   [role="button"],
@@ -83,22 +73,28 @@
     @apply transition-colors duration-200;
   }
 
-  /* Better focus ring (cheap + consistent) */
   :focus-visible {
     outline: 2px solid color-mix(in oklch, var(--ring) 100%, transparent);
     outline-offset: 3px;
   }
+
+  /* ✅ BIG INP FIX: during theme toggle, kill transitions/animations temporarily */
+  .theme-changing,
+  .theme-changing * ,
+  .theme-changing *::before,
+  .theme-changing *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
 }
 
-/* -------------------------------------------------------------------------- */
-/* Utilities */
-/* -------------------------------------------------------------------------- */
+/* ------------------------------ Utilities ------------------------------ */
 @layer utilities {
   .text-balance {
     text-wrap: balance;
   }
 
-  /* ✅ Pointer glow using CSS vars (no React rerenders needed) */
   .hive-pointer-glow {
     background: radial-gradient(
       560px circle at var(--mx, 50%) var(--my, 20%),
@@ -107,7 +103,6 @@
     );
   }
 
-  /* Mesh background */
   .hive-mesh-bg {
     background-image:
       radial-gradient(at 0% 0%, oklch(0.70 0.19 162 / 0.16) 0px, transparent 55%),
@@ -115,44 +110,34 @@
       radial-gradient(at 50% 100%, oklch(0.70 0.12 162 / 0.10) 0px, transparent 55%);
   }
 
-  /* Grid mask (used in TSX) */
   .hive-grid-mask {
     opacity: 0.28;
     background-image:
-      linear-gradient(to right, rgba(128, 128, 128, 0.08) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(128, 128, 128, 0.08) 1px, transparent 1px);
+      linear-gradient(to right, rgba(128,128,128,0.08) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(128,128,128,0.08) 1px, transparent 1px);
     background-size: 64px 64px;
     mask-image: radial-gradient(ellipse 80% 55% at 50% 0%, #000 70%, transparent 100%);
   }
 
-  /* Noise overlay */
   .hive-noise::before {
     content: "";
     @apply pointer-events-none absolute inset-0 opacity-[0.03] z-50;
     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
   }
 
-  /* Glass */
   .glass-panel {
     @apply bg-background/70 backdrop-blur-xl border border-white/10 dark:border-white/5;
     box-shadow: 0 18px 70px -45px rgba(0, 0, 0, 0.55);
   }
 
-  /* Shine layer */
   .hive-shine {
     background:
-      radial-gradient(circle at 20% 10%, rgba(255, 255, 255, 0.14), transparent 45%),
-      radial-gradient(circle at 80% 0%, rgba(255, 255, 255, 0.10), transparent 40%);
+      radial-gradient(circle at 20% 10%, rgba(255,255,255,0.14), transparent 45%),
+      radial-gradient(circle at 80% 0%, rgba(255,255,255,0.10), transparent 40%);
   }
 
-  /* Shimmer */
   .animate-shimmer {
-    background: linear-gradient(
-      110deg,
-      transparent 45%,
-      rgba(255, 255, 255, 0.12) 50%,
-      transparent 55%
-    );
+    background: linear-gradient(110deg, transparent 45%, rgba(255,255,255,0.12) 50%, transparent 55%);
     background-size: 200% 100%;
     animation: shimmer 2.8s infinite;
   }
@@ -162,24 +147,6 @@
     100% { background-position: 200% 0; }
   }
 
-  /* Outline button hover (visible in LIGHT + DARK) */
-  .btn-outline-architect {
-    @apply border-border/70 bg-background/40 text-foreground;
-  }
-
-  .btn-outline-architect:hover {
-    background: color-mix(in oklch, var(--foreground) 6%, transparent);
-  }
-
-  .dark .btn-outline-architect {
-    @apply border-white/20 bg-transparent text-foreground;
-  }
-
-  .dark .btn-outline-architect:hover {
-    background: rgba(255, 255, 255, 0.10);
-  }
-
-  /* Reduced motion safety */
   @media (prefers-reduced-motion: reduce) {
     * {
       animation-duration: 0.001ms !important;
