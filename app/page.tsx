@@ -1,3 +1,4 @@
+// app/page.tsx
 "use client";
 
 import {
@@ -34,31 +35,29 @@ const stagger = {
 
 export default function LandingPage() {
   const [scrolled, setScrolled] = useState(false);
-  const [mouse, setMouse] = useState({ x: 0, y: 0 });
+   
   const reduceMotion = useReducedMotion();
   const raf = useRef<number | null>(null);
 
-  useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 18);
+ useEffect(() => {
+  const onScroll = () => setScrolled(window.scrollY > 18);
 
-    const onMove = (e: MouseEvent) => {
-      if (raf.current) return;
-      raf.current = window.requestAnimationFrame(() => {
-        setMouse({ x: e.clientX, y: e.clientY });
-        raf.current = null;
-      });
-    };
+  const onMove = (e: MouseEvent) => {
+    // no React state, just CSS vars
+    document.documentElement.style.setProperty("--mx", `${e.clientX}px`);
+    document.documentElement.style.setProperty("--my", `${e.clientY}px`);
+  };
 
-    onScroll();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("mousemove", onMove, { passive: true });
+  onScroll();
+  window.addEventListener("scroll", onScroll, { passive: true });
+  window.addEventListener("mousemove", onMove, { passive: true });
 
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("mousemove", onMove);
-      if (raf.current) cancelAnimationFrame(raf.current);
-    };
-  }, []);
+  return () => {
+    window.removeEventListener("scroll", onScroll);
+    window.removeEventListener("mousemove", onMove);
+  };
+}, []);
+
 
   const navItems = useMemo(
     () => [
@@ -76,15 +75,13 @@ export default function LandingPage() {
         <div className="absolute inset-0 hive-mesh-bg" />
         <div className="absolute inset-0 hive-grid-mask" />
 
-        {!reduceMotion && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-0 transition-opacity duration-700"
-            style={{
-              background: `radial-gradient(560px circle at ${mouse.x}px ${mouse.y}px, oklch(0.70 0.19 162 / 0.07), transparent 78%)`,
-            }}
-          />
-        )}
+       {!reduceMotion && (
+  <div
+    aria-hidden
+    className="pointer-events-none absolute inset-0 transition-opacity duration-700 hive-pointer-glow"
+  />
+)}
+
       </div>
 
       {/* Nav */}
