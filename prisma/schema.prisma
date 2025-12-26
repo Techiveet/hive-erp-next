@@ -6,35 +6,102 @@ datasource db {
   provider = "postgresql"
 }
 
+// -----------------------------------------------------------------------------
+// Better Auth - Core Models (required)
+// Docs: User, Session, Account, Verification
+// -----------------------------------------------------------------------------
+model User {
+  id            String   @id @default(cuid())
+  name          String?
+  email         String   @unique
+  emailVerified Boolean  @default(false)
+  image         String?
 
-enum TenantStatus {
-  ACTIVE
-  SUSPENDED
+  // ✅ add this back
+  twoFactorEnabled Boolean @default(false)
+
+  isActive      Boolean  @default(true)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  accounts      Account[]
+  sessions      Session[]
+
+  memberships    Membership[]
+  auditActorLogs AuditLog[] @relation("AuditActor")
+
+  @@map("user")
 }
 
-enum DomainType {
-  SUBDOMAIN
-  CUSTOM
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
 }
 
-enum MembershipStatus {
-  ACTIVE
-  INVITED
-  DISABLED
+model Account {
+  id                    String    @id @default(cuid())
+  userId                String
+  accountId             String
+  providerId            String
+  accessToken           String?
+  refreshToken          String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  idToken               String?
+  password              String?   // used for email/password
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@unique([providerId, accountId])
+  @@map("account")
 }
 
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+// -----------------------------------------------------------------------------
+// Your Multi-tenant + RBAC models
+// -----------------------------------------------------------------------------
 model Tenant {
-  id        String       @id @default(cuid())
-  name      String
-  slug      String       @unique
-  status    TenantStatus @default(ACTIVE)
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
+  id          String       @id @default(cuid())
+  name        String
+  slug        String       @unique
+  status      TenantStatus @default(ACTIVE)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
-  domains     TenantDomain[]
+  auditLogs   AuditLog[]
   memberships Membership[]
   roles       Role[]
-  auditLogs   AuditLog[]
+  domains     TenantDomain[]
+
+    brandSettings  BrandSettings?
 }
 
 model TenantDomain {
@@ -49,36 +116,26 @@ model TenantDomain {
   @@index([tenantId])
 }
 
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  memberships Membership[]
-  auditLogs   AuditLog[] @relation("AuditActor")
-}
-
 model Role {
   id        String   @id @default(cuid())
-  tenantId  String
+  tenantId  String?
+  key       String
   name      String
   createdAt DateTime @default(now())
 
-  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   memberships Membership[]
   permissions RolePermission[]
 
+  @@unique([tenantId, key])
   @@unique([tenantId, name])
   @@index([tenantId])
 }
 
 model Permission {
-  id   String @id @default(cuid())
-  key  String @unique
-  name String
-
+  id    String           @id @default(cuid())
+  key   String           @unique
+  name  String
   roles RolePermission[]
 }
 
@@ -100,9 +157,9 @@ model Membership {
   status    MembershipStatus @default(ACTIVE)
   createdAt DateTime         @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role   Role?  @relation(fields: [roleId], references: [id], onDelete: SetNull)
+  role   Role?   @relation(fields: [roleId], references: [id])
+  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, userId])
   @@index([tenantId])
@@ -119,9 +176,43 @@ model AuditLog {
   meta      Json?
   createdAt DateTime @default(now())
 
+  actor  User?  @relation("AuditActor", fields: [actorId], references: [id])
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  actor  User?  @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, createdAt])
   @@index([actorId, createdAt])
+}
+
+model BrandSettings {
+  id          String   @id @default(cuid())
+  tenantId    String   @unique
+
+  titleText   String?  // "Hive", "Acme", etc.
+  logoLightUrl String?
+  logoDarkUrl  String?
+  faviconUrl   String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+}
+
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum DomainType {
+  SUBDOMAIN
+  CUSTOM
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  DISABLED
 }

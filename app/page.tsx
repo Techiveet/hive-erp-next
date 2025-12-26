@@ -35,29 +35,28 @@ const stagger = {
 
 export default function LandingPage() {
   const [scrolled, setScrolled] = useState(false);
-   
+
   const reduceMotion = useReducedMotion();
   const raf = useRef<number | null>(null);
 
- useEffect(() => {
-  const onScroll = () => setScrolled(window.scrollY > 18);
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 18);
 
-  const onMove = (e: MouseEvent) => {
-    // no React state, just CSS vars
-    document.documentElement.style.setProperty("--mx", `${e.clientX}px`);
-    document.documentElement.style.setProperty("--my", `${e.clientY}px`);
-  };
+    const onMove = (e: MouseEvent) => {
+      // no React state, just CSS vars
+      document.documentElement.style.setProperty("--mx", `${e.clientX}px`);
+      document.documentElement.style.setProperty("--my", `${e.clientY}px`);
+    };
 
-  onScroll();
-  window.addEventListener("scroll", onScroll, { passive: true });
-  window.addEventListener("mousemove", onMove, { passive: true });
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("mousemove", onMove, { passive: true });
 
-  return () => {
-    window.removeEventListener("scroll", onScroll);
-    window.removeEventListener("mousemove", onMove);
-  };
-}, []);
-
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("mousemove", onMove);
+    };
+  }, []);
 
   const navItems = useMemo(
     () => [
@@ -75,13 +74,12 @@ export default function LandingPage() {
         <div className="absolute inset-0 hive-mesh-bg" />
         <div className="absolute inset-0 hive-grid-mask" />
 
-       {!reduceMotion && (
-  <div
-    aria-hidden
-    className="pointer-events-none absolute inset-0 transition-opacity duration-700 hive-pointer-glow"
-  />
-)}
-
+        {!reduceMotion && (
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 transition-opacity duration-700 hive-pointer-glow"
+          />
+        )}
       </div>
 
       {/* Nav */}
@@ -114,12 +112,16 @@ export default function LandingPage() {
 
           <div className="flex items-center gap-3">
             <ThemeToggle />
-            <Button variant="ghost" className="hidden rounded-full sm:flex">
-              Login
+            <Button
+              asChild
+              variant="ghost"
+              className="hidden rounded-full sm:flex"
+            >
+              <Link href="/sign-in">Login</Link>
             </Button>
 
             <Button className="rounded-full bg-brand-primary px-6 font-bold text-white shadow-[0_12px_32px_-18px_rgba(0,0,0,0.6)] hover:shadow-[0_18px_42px_-18px_rgba(0,0,0,0.7)]">
-              Deploy OS <Zap className="ml-2 h-4 w-4" />
+              Sign up <Zap className="ml-2 h-4 w-4" />
             </Button>
           </div>
         </div>
@@ -130,7 +132,12 @@ export default function LandingPage() {
 
       {/* HERO */}
       <section className="relative flex flex-col items-center px-6 pb-20 pt-14 md:pt-24 text-center">
-        <motion.div variants={stagger} initial="hidden" animate="show" className="max-w-5xl">
+        <motion.div
+          variants={stagger}
+          initial="hidden"
+          animate="show"
+          className="max-w-5xl"
+        >
           <motion.div variants={fadeUp}>
             <Badge
               variant="outline"
@@ -155,11 +162,14 @@ export default function LandingPage() {
             variants={fadeUp}
             className="mx-auto mt-10 max-w-2xl text-lg leading-relaxed text-muted-foreground sm:text-xl"
           >
-            Provision infrastructure, manage RBAC, and monitor real-time tenant flows from
-            one high-performance cockpit. Built on Next.js + Prisma.
+            Provision infrastructure, manage RBAC, and monitor real-time tenant
+            flows from one high-performance cockpit. Built on Next.js + Prisma.
           </motion.p>
 
-          <motion.div variants={fadeUp} className="mt-12 flex flex-wrap justify-center gap-4">
+          <motion.div
+            variants={fadeUp}
+            className="mt-12 flex flex-wrap justify-center gap-4"
+          >
             <Button
               asChild
               size="lg"
@@ -232,11 +242,18 @@ export default function LandingPage() {
       </section>
 
       {/* PLATFORM / BENTO */}
-      <section id="platform" className="border-y border-border/50 bg-muted/5 px-6 py-24">
+      <section
+        id="platform"
+        className="border-y border-border/50 bg-muted/5 px-6 py-24"
+      >
         <div className="mx-auto max-w-7xl">
           <div className="mb-16">
-            <h2 className="text-4xl font-bold tracking-tighter sm:text-5xl">Infrastructure as Logic</h2>
-            <p className="mt-4 text-lg text-muted-foreground">Ship enterprise features without the boilerplate.</p>
+            <h2 className="text-4xl font-bold tracking-tighter sm:text-5xl">
+              Infrastructure as Logic
+            </h2>
+            <p className="mt-4 text-lg text-muted-foreground">
+              Ship enterprise features without the boilerplate.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 gap-6 md:grid-cols-12">
@@ -288,9 +305,21 @@ export default function LandingPage() {
 
           <div className="relative grid grid-cols-1 gap-12 md:grid-cols-3 md:gap-16">
             <div className="pointer-events-none absolute left-0 top-10 hidden h-px w-full bg-gradient-to-r from-transparent via-border/60 to-transparent md:block" />
-            <Step num="01" title="Define Specs" body="Domains, storage policies, and compliance rules." />
-            <Step num="02" title="Auto-Provision" body="Schema + edge propagation is triggered automatically." />
-            <Step num="03" title="Observe" body="Monitor tenant health & security logs from one API." />
+            <Step
+              num="01"
+              title="Define Specs"
+              body="Domains, storage policies, and compliance rules."
+            />
+            <Step
+              num="02"
+              title="Auto-Provision"
+              body="Schema + edge propagation is triggered automatically."
+            />
+            <Step
+              num="03"
+              title="Observe"
+              body="Monitor tenant health & security logs from one API."
+            />
           </div>
         </div>
       </section>
@@ -304,7 +333,8 @@ export default function LandingPage() {
               Stop Building Boilerplate.
             </h2>
             <p className="mt-6 max-w-xl text-xl opacity-80">
-              Focus on business logic. Hive handles infra, tenancy and observability.
+              Focus on business logic. Hive handles infra, tenancy and
+              observability.
             </p>
 
             <div className="mt-12 flex flex-wrap justify-center gap-4">
@@ -345,11 +375,17 @@ export default function LandingPage() {
           </div>
 
           <div className="flex flex-wrap justify-center gap-10">
-            {["Terms", "Privacy", "Security", "GitHub", "API Status"].map((l) => (
-              <Link key={l} href="#" className="transition-colors hover:text-foreground">
-                {l}
-              </Link>
-            ))}
+            {["Terms", "Privacy", "Security", "GitHub", "API Status"].map(
+              (l) => (
+                <Link
+                  key={l}
+                  href="#"
+                  className="transition-colors hover:text-foreground"
+                >
+                  {l}
+                </Link>
+              )
+            )}
           </div>
         </div>
       </footer>
@@ -372,7 +408,13 @@ function InlineCheck({ text }: { text: string }) {
 
 function CheckIcon() {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" className="text-brand-primary">
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="text-brand-primary"
+    >
       <path
         d="M20 6L9 17l-5-5"
         stroke="currentColor"
@@ -418,7 +460,9 @@ function BentoCard({
         </div>
 
         <h3 className="text-2xl font-bold tracking-tight">{title}</h3>
-        <p className="mt-3 text-muted-foreground leading-relaxed">{description}</p>
+        <p className="mt-3 text-muted-foreground leading-relaxed">
+          {description}
+        </p>
         {visual && <div className="mt-8">{visual}</div>}
       </div>
 
@@ -435,7 +479,10 @@ function SecurityVisual() {
         <div key={i} className="flex items-center gap-3">
           <div className="h-2 w-2 animate-pulse rounded-full bg-brand-primary" />
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-            <div className="h-full animate-shimmer bg-brand-primary/35" style={{ width: `${w}%` }} />
+            <div
+              className="h-full animate-shimmer bg-brand-primary/35"
+              style={{ width: `${w}%` }}
+            />
           </div>
         </div>
       ))}
@@ -454,7 +501,12 @@ function PulseVisual() {
         <motion.div
           key={i}
           animate={{ height: [16, 58, 16] }}
-          transition={{ duration: 2.1, repeat: Infinity, delay: i * 0.08, ease: "easeInOut" }}
+          transition={{
+            duration: 2.1,
+            repeat: Infinity,
+            delay: i * 0.08,
+            ease: "easeInOut",
+          }}
           className="w-full rounded-t-full border-t border-orange-500/30 bg-orange-500/20"
         />
       ))}
@@ -465,7 +517,9 @@ function PulseVisual() {
 function CodePreview() {
   return (
     <div className="rounded-xl border border-white/5 bg-zinc-950 p-5 font-mono text-[11px] text-zinc-400 shadow-inner">
-      <div className="text-emerald-400">await hive.provision(&quot;tenant-01&quot;, &#123;</div>
+      <div className="text-emerald-400">
+        await hive.provision(&quot;tenant-01&quot;, &#123;
+      </div>
       <div className="pl-4">region: &quot;us-east-1&quot;,</div>
       <div className="pl-4">modules: [&quot;HR&quot;, &quot;Billing&quot;]</div>
       <div className="text-emerald-400">&#125;);</div>
@@ -473,7 +527,15 @@ function CodePreview() {
   );
 }
 
-function Step({ num, title, body }: { num: string; title: string; body: string }) {
+function Step({
+  num,
+  title,
+  body,
+}: {
+  num: string;
+  title: string;
+  body: string;
+}) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 18 }}
