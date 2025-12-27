@@ -1,69 +1,69 @@
 // app/(dashboard)/page.tsx
 
-import { auth } from "@/lib/auth";
-import { headers } from "next/headers";
-import { prisma } from "@/lib/prisma";
-import { redirect } from "next/navigation";
+import { Badge } from "@/components/ui/badge";
 
-export const runtime = "nodejs";
+export default function DashboardHome() {
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-3xl font-extrabold tracking-tighter">Overview</h1>
+          <p className="text-sm text-muted-foreground">
+            Tenant health, access control, and system telemetry in one place.
+          </p>
+        </div>
+        <Badge
+          variant="outline"
+          className="w-fit rounded-full border-brand-primary/20 bg-brand-primary/10 text-brand-primary"
+        >
+          Core Kernel: Active
+        </Badge>
+      </div>
 
-async function resolveTenantId() {
-  const h = await headers();
-  const host = (h.get("host") || "").toLowerCase();
-  const bareHost = host.split(":")[0];
+      <div className="grid gap-4 md:grid-cols-12">
+        <div className="md:col-span-8 rounded-[2rem] border border-border/50 bg-card/40 p-6">
+          <div className="text-sm font-semibold">Realtime Activity</div>
+          <div className="mt-2 h-40 rounded-[1.5rem] bg-muted/30" />
+        </div>
+        <div className="md:col-span-4 rounded-[2rem] border border-border/50 bg-card/40 p-6">
+          <div className="text-sm font-semibold">Tenant Summary</div>
+          <div className="mt-4 space-y-3 text-sm text-muted-foreground">
+            <Row k="Active tenants" v="128" />
+            <Row k="Pending invites" v="14" />
+            <Row k="Failed logins" v="3" />
+          </div>
+        </div>
 
-  if (bareHost === "localhost") {
-    const t = await prisma.tenant.findUnique({
-      where: { slug: "central-hive" },
-      select: { id: true },
-    });
-    return t?.id ?? null;
-  }
+        <div className="md:col-span-4 rounded-[2rem] border border-border/50 bg-card/40 p-6">
+          <div className="text-sm font-semibold">RBAC</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Roles, permissions, and policy checks.
+          </p>
+        </div>
 
-  const d = await prisma.tenantDomain.findFirst({
-    where: { domain: bareHost },
-    select: { tenantId: true },
-  });
+        <div className="md:col-span-4 rounded-[2rem] border border-border/50 bg-card/40 p-6">
+          <div className="text-sm font-semibold">Audit Logs</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Track actions across tenants.
+          </p>
+        </div>
 
-  return d?.tenantId ?? null;
+        <div className="md:col-span-4 rounded-[2rem] border border-border/50 bg-card/40 p-6">
+          <div className="text-sm font-semibold">Storage</div>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Tenant-aware file systems.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-export default async function DashboardPage() {
-  const h = await headers();
-  const session = await auth.api.getSession({ headers: h as any });
-
-  if (!session?.user?.id) {
-    redirect("/sign-in");
-  }
-
-  const tenantId = await resolveTenantId();
-
-  const membership = tenantId
-    ? await prisma.membership.findFirst({
-        where: { tenantId, userId: session.user.id },
-        include: { role: true, tenant: true },
-      })
-    : null;
-
+function Row({ k, v }: { k: string; v: string }) {
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Dashboard</h1>
-
-      <div className="rounded border p-4 space-y-2">
-        <div>
-          <span className="font-semibold">User:</span> {session.user.email}
-        </div>
-        <div>
-          <span className="font-semibold">Tenant:</span> {membership?.tenant?.name ?? "Unknown"}
-        </div>
-        <div>
-          <span className="font-semibold">Role:</span> {membership?.role?.name ?? "No role"}
-        </div>
-      </div>
-
-      <div className="rounded border p-4">
-        Next step: add modules (Users, Roles, Files, Inventory…)
-      </div>
+    <div className="flex items-center justify-between">
+      <span>{k}</span>
+      <span className="font-semibold text-foreground">{v}</span>
     </div>
   );
 }
