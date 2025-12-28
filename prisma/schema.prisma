@@ -1,39 +1,40 @@
+// prisma/schema.prisma
+
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
   provider = "postgresql"
+
 }
 
 // -----------------------------------------------------------------------------
-// Better Auth - Core Models (required)
-// Docs: User, Session, Account, Verification
+// Better Auth - Core Models
 // -----------------------------------------------------------------------------
 model User {
-  id            String   @id @default(cuid())
-  name          String?
-  email         String   @unique
-  emailVerified Boolean  @default(false)
-  image         String?
+  id               String   @id @default(cuid())
+  name             String?
+  email            String   @unique
+  emailVerified    Boolean  @default(false)
+  image            String?  // Profile image from Auth providers
+  avatarUrl        String?  // Custom uploaded avatar used in your UI
+  
+  twoFactorEnabled Boolean  @default(false)
+  isActive         Boolean  @default(true)
 
-  // ✅ add this back
-  twoFactorEnabled Boolean @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  isActive      Boolean  @default(true)
-
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-
-  accounts      Account[]
-  sessions      Session[]
-
-  memberships    Membership[]
-  auditActorLogs AuditLog[] @relation("AuditActor")
+  accounts         Account[]
+  sessions         Session[]
+  memberships      Membership[]
+  userRoles        UserRole[]
+  passwordTokens   PasswordSetupToken[]
+  auditActorLogs   AuditLog[]           @relation("AuditActor")
 
   @@map("user")
 }
-
 
 model Session {
   id        String   @id @default(cuid())
@@ -62,14 +63,14 @@ model Account {
   refreshTokenExpiresAt DateTime?
   scope                 String?
   idToken               String?
-  password              String?   // used for email/password
+  password              String?   // Used for credentials provider
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([userId])
   @@unique([providerId, accountId])
+  @@index([userId])
   @@map("account")
 }
 
@@ -86,22 +87,25 @@ model Verification {
 }
 
 // -----------------------------------------------------------------------------
-// Your Multi-tenant + RBAC models
+// Multi-tenant Core
 // -----------------------------------------------------------------------------
 model Tenant {
-  id          String       @id @default(cuid())
-  name        String
-  slug        String       @unique
-  status      TenantStatus @default(ACTIVE)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  id        String       @id @default(cuid())
+  name      String
+  slug      String       @unique
+  status    TenantStatus @default(ACTIVE)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
 
-  auditLogs   AuditLog[]
-  memberships Membership[]
-  roles       Role[]
-  domains     TenantDomain[]
+  auditLogs        AuditLog[]
+  memberships      Membership[]
+  roles            Role[]
+  domains          TenantDomain[]
+  brandingSettings BrandingSettings?
+  companySettings  CompanySettings?
+  userRoles        UserRole[]
 
-    brandSettings  BrandSettings?
+  @@map("tenant")
 }
 
 model TenantDomain {
@@ -114,29 +118,39 @@ model TenantDomain {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
+  @@map("tenant_domain")
 }
 
+// -----------------------------------------------------------------------------
+// RBAC (Central + Tenant)
+// -----------------------------------------------------------------------------
 model Role {
-  id        String   @id @default(cuid())
-  tenantId  String?
+  id        String    @id @default(cuid())
+  tenantId  String?   // null => CENTRAL role
   key       String
   name      String
-  createdAt DateTime @default(now())
+  scope     RoleScope @default(CENTRAL)
+  createdAt DateTime  @default(now())
 
-  tenant      Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  memberships Membership[]
-  permissions RolePermission[]
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships     Membership[]
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
 
   @@unique([tenantId, key])
   @@unique([tenantId, name])
   @@index([tenantId])
+  @@map("role")
 }
 
 model Permission {
-  id    String           @id @default(cuid())
-  key   String           @unique
-  name  String
-  roles RolePermission[]
+  id   String @id @default(cuid())
+  key  String @unique
+  name String
+
+  rolePermissions RolePermission[]
+
+  @@map("permission")
 }
 
 model RolePermission {
@@ -147,6 +161,24 @@ model RolePermission {
   permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
 
   @@id([roleId, permissionId])
+  @@map("role_permission")
+}
+
+model UserRole {
+  id        String  @id @default(cuid())
+  userId    String
+  roleId    String
+  tenantId  String?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId, tenantId])
+  @@index([userId])
+  @@index([roleId])
+  @@index([tenantId])
+  @@map("user_role")
 }
 
 model Membership {
@@ -157,13 +189,59 @@ model Membership {
   status    MembershipStatus @default(ACTIVE)
   createdAt DateTime         @default(now())
 
-  role   Role?   @relation(fields: [roleId], references: [id])
-  tenant Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role?  @relation(fields: [roleId], references: [id])
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, userId])
   @@index([tenantId])
   @@index([userId])
+  @@map("membership")
+}
+
+// -----------------------------------------------------------------------------
+// Settings & Security
+// -----------------------------------------------------------------------------
+model PasswordSetupToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_setup_token")
+}
+
+model CompanySettings {
+  id        String  @id @default(cuid())
+  tenantId  String  @unique
+  
+  legalName String?
+  taxId     String?
+  address   String?
+  phone     String?
+  email     String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("company_settings")
+}
+
+model BrandingSettings {
+  id           String  @id @default(cuid())
+  tenantId     String  @unique
+
+  titleText    String?
+  logoLightUrl String?
+  logoDarkUrl  String?
+  faviconUrl   String?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("branding_settings")
 }
 
 model AuditLog {
@@ -181,26 +259,12 @@ model AuditLog {
 
   @@index([tenantId, createdAt])
   @@index([actorId, createdAt])
+  @@map("audit_log")
 }
 
-model BrandSettings {
-  id          String   @id @default(cuid())
-  tenantId    String   @unique
-
-  titleText   String?  // "Hive", "Acme", etc.
-  logoLightUrl String?
-  logoDarkUrl  String?
-  faviconUrl   String?
-
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-
-  @@index([tenantId])
-}
-
-
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
 enum TenantStatus {
   ACTIVE
   SUSPENDED
@@ -215,4 +279,9 @@ enum MembershipStatus {
   ACTIVE
   INVITED
   DISABLED
+}
+
+enum RoleScope {
+  CENTRAL
+  TENANT
 }

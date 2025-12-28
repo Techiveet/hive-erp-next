@@ -1,41 +1,86 @@
 // lib/rbac.ts
-// ✅ FIXED: no Permission.tenantId usage (because your DB doesn't have it)
 
-import { prisma } from "./prisma";
+import { getCurrentSession } from "@/lib/auth-server";
+import { prisma } from "@/lib/prisma";
+
+const CENTRAL_SLUG = "central-hive";
+const CENTRAL_SUPER = "central_superadmin";
+
+// Optional bypass keys (lets you gate UI quickly)
+const CENTRAL_ADMIN_BYPASS = ["manage_security", "manage_roles", "manage_users"] as const;
 
 /**
- * Ensure `central_superadmin` role always has *all* permissions.
+ * Central tenant resolver (single source of truth)
  */
-export async function syncCentralSuperAdminPermissions() {
-  const centralRole = await prisma.role.findFirst({
-    where: { key: "central_superadmin", tenantId: null },
-  });
-
-  if (!centralRole) {
-    console.warn("[RBAC] central_superadmin role not found – nothing to sync.");
-    return;
-  }
-
-  const allPermissions = await prisma.permission.findMany({
+async function getCentralTenantId(): Promise<string> {
+  const central = await prisma.tenant.findUnique({
+    where: { slug: CENTRAL_SLUG },
     select: { id: true },
   });
 
-  if (!allPermissions.length) {
-    console.warn("[RBAC] No permissions found – nothing to sync.");
-    return;
+  if (!central?.id) throw new Error("CENTRAL_TENANT_NOT_FOUND");
+  return central.id;
+}
+
+/**
+ * Returns permission keys for the current user in a given tenant.
+ *
+ * IMPORTANT:
+ * - Permission model has NO tenantId => don't filter permissions by tenantId
+ * - Role uses rolePermissions (pivot), NOT "permissions"
+ */
+export async function getCurrentUserPermissions(
+  tenantId: string | null
+): Promise<string[]> {
+  const { user } = await getCurrentSession();
+  if (!user?.id) return [];
+
+  const effectiveTenantId = tenantId ?? (await getCentralTenantId());
+
+  const memberships = await prisma.membership.findMany({
+    where: { userId: user.id, tenantId: effectiveTenantId, status: "ACTIVE" },
+    select: {
+      role: {
+        select: {
+          key: true,
+          rolePermissions: {
+            select: {
+              permission: { select: { key: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  const roleKeys = memberships
+    .map((m) => m.role?.key)
+    .filter(Boolean) as string[];
+
+  const isCentralSuper = roleKeys.includes(CENTRAL_SUPER);
+
+  // ✅ central_superadmin => all permissions + bypass
+  if (isCentralSuper) {
+    const all = await prisma.permission.findMany({
+      select: { key: true },
+      orderBy: { key: "asc" },
+    });
+
+    return Array.from(
+      new Set([...all.map((p) => p.key), ...CENTRAL_ADMIN_BYPASS])
+    );
   }
 
-  await prisma.rolePermission.deleteMany({
-    where: { roleId: centralRole.id },
-  });
+  // ✅ normal user => rolePermissions
+  const keys: string[] = [];
+  for (const m of memberships) {
+    const rps = m.role?.rolePermissions ?? [];
+    for (const rp of rps) keys.push(rp.permission.key);
+  }
 
-  await prisma.rolePermission.createMany({
-    data: allPermissions.map((p) => ({
-      roleId: centralRole.id,
-      permissionId: p.id,
-    })),
-    skipDuplicates: true,
-  });
+  // If you want bypass keys ALWAYS present, just append them.
+  // If you want them only when explicitly granted, keep filtering.
+  const allowedBypass = CENTRAL_ADMIN_BYPASS.filter((k) => keys.includes(k));
 
-  console.log(`[RBAC] Synced central_superadmin with ${allPermissions.length} permissions.`);
+  return Array.from(new Set([...keys, ...allowedBypass]));
 }

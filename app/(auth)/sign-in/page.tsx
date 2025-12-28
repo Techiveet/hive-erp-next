@@ -6,13 +6,13 @@ import { prisma } from "@/lib/prisma";
 export const metadata: Metadata = { title: "Sign In" };
 
 async function getBrandSettings() {
-  const h = await headers(); // ✅ Next.js 16: await is required
+  const h = await headers(); 
   const host = (h.get("host") || "").toLowerCase();
   const bareHost = host.split(":")[0];
 
   let tenantId: string | null = null;
 
-  if (bareHost === "localhost") {
+  if (bareHost === "localhost" || bareHost === "127.0.0.1") {
     const centralTenant = await prisma.tenant.findUnique({
       where: { slug: "central-hive" },
       select: { id: true },
@@ -28,14 +28,15 @@ async function getBrandSettings() {
 
   if (!tenantId) return null;
 
-  return prisma.brandSettings.findFirst({
+  // ✅ FIXED: Changed brandSettings -> brandingSettings to match schema.prisma
+  return prisma.brandingSettings.findFirst({
     where: { tenantId },
     select: {
       titleText: true,
       logoLightUrl: true,
       logoDarkUrl: true,
       faviconUrl: true,
-    },
+    },  
   });
 }
 

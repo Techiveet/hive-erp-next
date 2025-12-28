@@ -4,7 +4,7 @@ import { closePrisma, prisma } from "../lib/prisma";
 
 import { auth } from "../lib/auth";
 import { hash } from "bcryptjs";
-import { syncCentralSuperAdminPermissions } from "../lib/rbac";
+import { syncCentralSuperAdminPermissionsSeed } from "../lib/rbac-seed";
 
 // -----------------------------------------------------------------------------
 // Pretty console output
@@ -367,7 +367,7 @@ async function main() {
 
   const centralHiveAdmin = await ensureUser({
     name: "Central Hive Superadmin",
-    email: "central.hive.admin@hive.test",
+    email: "jollyaemero2224@gmail.com",
     password: DEFAULT_PASSWORD,
   });
 
@@ -429,7 +429,8 @@ async function main() {
   // 8) SYNC CENTRAL ROLE PERMISSIONS
   // ---------------------------------------------------------------------------
   section("Syncing central_superadmin permissions");
-  await syncCentralSuperAdminPermissions();
+await syncCentralSuperAdminPermissionsSeed();
+
   console.log(`${COLORS.green}  ✔ central_superadmin permissions synced${COLORS.reset}`);
 
   // ---------------------------------------------------------------------------
