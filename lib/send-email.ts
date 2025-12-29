@@ -2,10 +2,12 @@
 "use server";
 
 /**
- * CENTRAL-ONLY email sender (env-based).
- * - No Prisma EmailSettings (your schema doesn't have it)
- * - Lazy-imports nodemailer/resend so Turbopack won't crash if not installed
+ * Email sender
  * - Supports RESEND or SMTP via env
+ * - Can send raw html/text OR React Email component
+ * - Exports:
+ *    - sendEmail()        (low-level)
+ *    - sendAccountEmail() (your account email wrapper)
  */
 
 import * as React from "react";
@@ -13,13 +15,20 @@ import fs from "fs";
 import path from "path";
 import { render } from "@react-email/components";
 
+import {
+  UserAccountEmail,
+  getUserAccountSubject,
+  type UserAccountKind,
+  type UserStatus,
+} from "@/emails/user-account-template";
+
 /* ------------------------------------------------------------------ */
 /* Types */
 /* ------------------------------------------------------------------ */
 
 type EmailProvider = "RESEND" | "SMTP";
 
-type SendEmailArgs = {
+export type SendEmailArgs = {
   to: string | string[];
   subject: string;
   react?: React.ReactElement;
@@ -51,11 +60,9 @@ function getEnv(name: string) {
 }
 
 function resolveProvider(): EmailProvider {
-  // Priority: explicit provider
   const p = (getEnv("EMAIL_PROVIDER") || "").toUpperCase();
   if (p === "SMTP" || p === "RESEND") return p as EmailProvider;
 
-  // Auto: if Resend key exists => RESEND else SMTP
   if (getEnv("RESEND_API_KEY")) return "RESEND";
   return "SMTP";
 }
@@ -64,7 +71,7 @@ function resolveFrom(): { from: string; replyTo?: string } {
   const fromName = getEnv("EMAIL_FROM_NAME") || "Hive";
   const fromEmail =
     getEnv("EMAIL_FROM_ADDRESS") ||
-    getEnv("RESEND_FROM") || // optional alias
+    getEnv("RESEND_FROM") ||
     "onboarding@resend.dev";
 
   const replyTo = getEnv("EMAIL_REPLY_TO");
@@ -80,19 +87,17 @@ async function resolveEmailConfig(): Promise<EmailConfig | null> {
     const port = Number(getEnv("SMTP_PORT") || 587);
     const user = getEnv("SMTP_USER");
     const pass = getEnv("SMTP_PASSWORD");
-    const secure = (getEnv("SMTP_SECURE") || "").toLowerCase() === "true" || port === 465;
+    const secure =
+      (getEnv("SMTP_SECURE") || "").toLowerCase() === "true" || port === 465;
 
     if (!host || !user || !pass) {
-      console.error("❌ [EMAIL] SMTP config incomplete. Required: SMTP_HOST, SMTP_USER, SMTP_PASSWORD");
+      console.error(
+        "❌ [EMAIL] SMTP config incomplete. Required: SMTP_HOST, SMTP_USER, SMTP_PASSWORD"
+      );
       return null;
     }
 
-    return {
-      provider,
-      from,
-      replyTo,
-      smtp: { host, port, user, pass, secure },
-    };
+    return { provider, from, replyTo, smtp: { host, port, user, pass, secure } };
   }
 
   // RESEND
@@ -106,7 +111,7 @@ async function resolveEmailConfig(): Promise<EmailConfig | null> {
 }
 
 /* ------------------------------------------------------------------ */
-/* Core sendEmail */
+/* Core sendEmail (EXPORT THIS ✅) */
 /* ------------------------------------------------------------------ */
 
 export async function sendEmail({
@@ -129,15 +134,12 @@ export async function sendEmail({
     finalHtml = await render(react);
   }
 
-  // Always ensure we have something to send
   if (!finalHtml && !text) {
     console.warn("⚠️ [EMAIL] No html/react/text provided; skipping send.");
     return;
   }
 
-  /* -------------------------------------------------------------- */
-  /* RESEND (lazy import) */
-  /* -------------------------------------------------------------- */
+  /* ----------------------------- RESEND ---------------------------- */
   if (config.provider === "RESEND") {
     try {
       const { Resend } = await import("resend");
@@ -155,15 +157,12 @@ export async function sendEmail({
 
       console.log("✅ [EMAIL] Sent via Resend", { to: recipients });
     } catch (err: any) {
-      // If package missing, you'll see "Cannot find module 'resend'"
       console.error("❌ [EMAIL] Resend failed", err?.message || err);
     }
     return;
   }
 
-  /* -------------------------------------------------------------- */
-  /* SMTP (lazy import) */
-  /* -------------------------------------------------------------- */
+  /* ------------------------------ SMTP ----------------------------- */
   try {
     const nodemailer = (await import("nodemailer")).default;
 
@@ -171,10 +170,7 @@ export async function sendEmail({
       host: config.smtp!.host,
       port: config.smtp!.port,
       secure: config.smtp!.secure,
-      auth: {
-        user: config.smtp!.user,
-        pass: config.smtp!.pass,
-      },
+      auth: { user: config.smtp!.user, pass: config.smtp!.pass },
     });
 
     const attachments: any[] = [];
@@ -182,7 +178,6 @@ export async function sendEmail({
     // Optional: inline logo replacement (CID)
     if (finalHtml?.includes("/logo/logo.png")) {
       const logoPath = path.join(process.cwd(), "public", "logo", "logo.png");
-
       if (fs.existsSync(logoPath)) {
         attachments.push({
           filename: "logo.png",
@@ -209,37 +204,59 @@ export async function sendEmail({
 
     console.log("✅ [EMAIL] Sent via SMTP", { to: recipients });
   } catch (err: any) {
-    // If package missing, you'll see "Cannot find module 'nodemailer'"
     console.error("❌ [EMAIL] SMTP failed", err?.message || err);
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* Optional helper for account emails (keep if you use it) */
+/* Account helper (optional wrapper) */
 /* ------------------------------------------------------------------ */
 
-import {
-  UserAccountEmail,
-  getUserAccountSubject,
-  type UserAccountKind,
-  type UserStatus,
-} from "@/emails/user-account-template";
-
-type SendAccountEmailArgs =
+export type SendAccountEmailArgs =
   | {
       to: string;
       type: "account_created";
-      payload: { name?: string | null; email: string; tempPassword?: string };
+      payload: {
+        name?: string | null;
+        email: string;
+        tempPassword?: string;
+
+        tenantName?: string;
+        tenantDomain?: string;
+        loginUrl?: string;
+        roleName?: string;
+      };
     }
   | {
       to: string;
       type: "account_updated";
-      payload: { name?: string | null; email: string };
+      payload: {
+        name?: string | null;
+        email: string;
+
+        changedName?: boolean;
+        changedPassword?: boolean;
+        changedRole?: boolean;
+
+        tenantName?: string;
+        tenantDomain?: string;
+        loginUrl?: string;
+        roleName?: string;
+      };
     }
   | {
       to: string;
       type: "account_status_changed";
-      payload: { name?: string | null; email: string; isActive: boolean };
+      payload: {
+        name?: string | null;
+        email: string;
+        isActive: boolean;
+
+        tenantName?: string;
+        tenantDomain?: string;
+        loginUrl?: string;
+        roleName?: string;
+      };
     };
 
 export async function sendAccountEmail(args: SendAccountEmailArgs): Promise<void> {
@@ -247,31 +264,50 @@ export async function sendAccountEmail(args: SendAccountEmailArgs): Promise<void
   let status: UserStatus;
   let password: string | undefined;
 
+  // flags (only meaningful for updated)
+  const changedName = args.type === "account_updated" ? Boolean(args.payload.changedName) : false;
+  const changedPassword =
+    args.type === "account_updated" ? Boolean(args.payload.changedPassword) : false;
+  const changedRole = args.type === "account_updated" ? Boolean(args.payload.changedRole) : false;
+
   switch (args.type) {
     case "account_created":
       kind = "created";
       status = "ACTIVE";
       password = args.payload.tempPassword;
       break;
+
     case "account_updated":
       kind = "updated";
       status = "ACTIVE";
       break;
+
     case "account_status_changed":
       kind = args.payload.isActive ? "updated" : "deactivated";
       status = args.payload.isActive ? "ACTIVE" : "INACTIVE";
       break;
   }
 
+  const subject = getUserAccountSubject(kind, args.payload.tenantName);
+
   await sendEmail({
     to: args.to,
-    subject: getUserAccountSubject(kind),
+    subject,
     react: React.createElement(UserAccountEmail, {
       kind,
       name: args.payload.name || args.payload.email,
       email: args.payload.email,
       password,
       status,
+      roleName: (args.payload as any).roleName,
+      tenantName: args.payload.tenantName,
+      tenantDomain: args.payload.tenantDomain,
+      loginUrl: args.payload.loginUrl,
+
+      // only show details on updated
+      changedName: kind === "updated" ? changedName : undefined,
+      changedPassword: kind === "updated" ? changedPassword : undefined,
+      changedRole: kind === "updated" ? changedRole : undefined,
     }),
   });
 }

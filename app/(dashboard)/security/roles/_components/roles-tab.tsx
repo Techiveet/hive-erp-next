@@ -43,7 +43,7 @@ import {
 
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
-import { DataTable, type CompanySettingsInfo, type BrandingSettingsInfo } from "@/components/data-table";
+import { DataTable, type CompanySettingsInfo, type BrandingSettingsInfo } from "@/components/datatable/data-table";
 
 export type PermissionDto = {
   id: string;

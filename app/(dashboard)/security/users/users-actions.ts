@@ -1,32 +1,38 @@
 "use server";
 
+import React from "react";
+import crypto from "crypto";
+import { hash } from "bcryptjs";
+import { headers } from "next/headers";
+import { MembershipStatus } from "@prisma/client";
+
+import { prisma } from "@/lib/prisma";
+import { auth } from "@/lib/auth";
+import { sendEmail } from "@/lib/send-email";
+import { userSchema } from "@/lib/validations/security";
+import { getCurrentSession } from "@/lib/auth-server";
+import { getCurrentUserPermissions } from "@/lib/rbac";
+
 import {
   UserAccountEmail,
   getUserAccountSubject,
+  type UserAccountKind,
+  type UserStatus,
 } from "@/emails/user-account-template";
-
-import { MembershipStatus } from "@prisma/client";
-import React from "react";
-import { auth } from "@/lib/auth";
-import crypto from "crypto";
-import { getCurrentSession } from "@/lib/auth-server";
-import { getCurrentUserPermissions } from "@/lib/rbac";
-import { hash } from "bcryptjs";
-import { headers } from "next/headers";
-import { prisma } from "@/lib/prisma";
-import { sendEmail } from "@/lib/send-email";
-import { userSchema } from "@/lib/validations/security";
 
 /* ------------------------------------------------------------------
  * Tenant helpers
  * ------------------------------------------------------------------ */
 
 async function getTenantMeta(tenantId?: string | null) {
+  const fallbackLogin =
+    process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "http://localhost:3000";
+
   if (!tenantId) {
     return {
       tenantName: undefined as string | undefined,
       tenantDomain: undefined as string | undefined,
-      loginUrl: process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL,
+      loginUrl: fallbackLogin,
     };
   }
 
@@ -39,16 +45,17 @@ async function getTenantMeta(tenantId?: string | null) {
     return {
       tenantName: undefined,
       tenantDomain: undefined,
-      loginUrl: process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL,
+      loginUrl: fallbackLogin,
     };
   }
 
-  const primaryDomain = tenant.domains[0]?.domain;
+  const primaryDomain = tenant.domains?.[0]?.domain?.trim() || undefined;
+
   const loginUrl = primaryDomain
     ? primaryDomain.startsWith("http")
       ? primaryDomain
       : `https://${primaryDomain}`
-    : process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL;
+    : fallbackLogin;
 
   return {
     tenantName: tenant.name,
@@ -63,10 +70,7 @@ async function getCentralTenantId(): Promise<string> {
     select: { id: true },
   });
 
-  if (!central) {
-    throw new Error("CENTRAL_TENANT_NOT_FOUND");
-  }
-
+  if (!central) throw new Error("CENTRAL_TENANT_NOT_FOUND");
   return central.id;
 }
 
@@ -81,6 +85,7 @@ async function authorizeUserAction(
   const { user } = await getCurrentSession();
   if (!user?.id) throw new Error("UNAUTHORIZED");
 
+  // tenant membership check (if tenant context)
   if (tenantId) {
     const membership = await prisma.membership.findUnique({
       where: { tenantId_userId: { tenantId, userId: user.id } },
@@ -100,15 +105,13 @@ async function authorizeUserAction(
       perms.includes("manage_security")
   );
 
-  if (!hasRequired) {
-    throw new Error("FORBIDDEN_INSUFFICIENT_PERMISSIONS");
-  }
+  if (!hasRequired) throw new Error("FORBIDDEN_INSUFFICIENT_PERMISSIONS");
 
   return { actorId: user.id };
 }
 
 /* ------------------------------------------------------------------
- * Password-setup token helpers
+ * Password setup token helpers
  * ------------------------------------------------------------------ */
 
 function generatePasswordSetupToken() {
@@ -120,29 +123,20 @@ function generatePasswordSetupToken() {
 async function issuePasswordSetupToken(userId: string) {
   const { token, expiresAt } = generatePasswordSetupToken();
 
-  await prisma.passwordSetupToken.deleteMany({
-    where: { userId },
-  });
+  await prisma.passwordSetupToken.deleteMany({ where: { userId } });
 
   await prisma.passwordSetupToken.create({
-    data: {
-      userId,
-      token,
-      expiresAt,
-    },
+    data: { userId, token, expiresAt },
   });
 
   return { token, expiresAt };
 }
 
 /* ------------------------------------------------------------------
- * Shared password-change helper
+ * Shared password-change helper (BetterAuth accounts table)
  * ------------------------------------------------------------------ */
 
-export async function changeUserPasswordInternal(
-  userId: string,
-  newPassword: string
-) {
+export async function changeUserPasswordInternal(userId: string, newPassword: string) {
   const hashedPassword = await hash(newPassword, 10);
 
   const account = await prisma.account.findFirst({
@@ -154,18 +148,19 @@ export async function changeUserPasswordInternal(
       where: { id: account.id },
       data: { password: hashedPassword },
     });
-  } else {
-    await prisma.account.create({
-      data: {
-        id: crypto.randomUUID(),
-        userId,
-        providerId: "credential",
-        accountId: userId,
-        password: hashedPassword,
-        accessToken: crypto.randomBytes(32).toString("hex"),
-      },
-    });
+    return;
   }
+
+  await prisma.account.create({
+    data: {
+      id: crypto.randomUUID(),
+      userId,
+      providerId: "credential",
+      accountId: userId,
+      password: hashedPassword,
+      accessToken: crypto.randomBytes(32).toString("hex"),
+    },
+  });
 }
 
 /* ------------------------------------------------------------------
@@ -177,6 +172,7 @@ export async function createOrUpdateUserAction(rawData: unknown) {
   if (!parsed.success) {
     throw new Error(parsed.error.issues[0]?.message ?? "INVALID_INPUT");
   }
+
   const input = parsed.data;
 
   await authorizeUserAction(
@@ -187,6 +183,7 @@ export async function createOrUpdateUserAction(rawData: unknown) {
   const role = await prisma.role.findUnique({ where: { id: input.roleId } });
   if (!role) throw new Error("ROLE_NOT_FOUND");
 
+  // Role scope checks
   if (input.tenantId && role.tenantId !== input.tenantId) {
     throw new Error("ROLE_TENANT_MISMATCH");
   }
@@ -194,6 +191,7 @@ export async function createOrUpdateUserAction(rawData: unknown) {
     throw new Error("ROLE_SCOPE_MISMATCH");
   }
 
+  // Uniqueness rules for special roles
   if (role.key === "central_superadmin" && role.tenantId === null) {
     const existingHolder = await prisma.membership.findFirst({
       where: {
@@ -202,9 +200,7 @@ export async function createOrUpdateUserAction(rawData: unknown) {
         status: MembershipStatus.ACTIVE,
       },
     });
-    if (existingHolder) {
-      throw new Error("CENTRAL_SUPERADMIN_ALREADY_ASSIGNED");
-    }
+    if (existingHolder) throw new Error("CENTRAL_SUPERADMIN_ALREADY_ASSIGNED");
   }
 
   if (role.key === "tenant_superadmin" && role.tenantId) {
@@ -216,37 +212,41 @@ export async function createOrUpdateUserAction(rawData: unknown) {
         status: MembershipStatus.ACTIVE,
       },
     });
-    if (existingTenantSuper) {
-      throw new Error("TENANT_SUPERADMIN_ALREADY_ASSIGNED");
-    }
+    if (existingTenantSuper) throw new Error("TENANT_SUPERADMIN_ALREADY_ASSIGNED");
   }
 
-  const { tenantName, tenantDomain, loginUrl } = await getTenantMeta(
-    input.tenantId
-  );
-
-  let user;
-  let changedName = false;
-  let changedPassword = false;
-  let changedRole = false;
+  const { tenantName, tenantDomain, loginUrl } = await getTenantMeta(input.tenantId);
 
   const plainPassword = (input.password ?? "").trim();
   const normalizedEmail = input.email.toLowerCase().trim();
 
+  let user: { id: string; name: string | null; email: string; isActive: boolean | null } | null =
+    null;
+
+  let changedName = false;
+  let changedPassword = false;
+  let changedRole = false;
+
   let passwordSetupUrl: string | undefined;
+
+  // determine tenant context for membership upsert
+  const effectiveTenantId = input.tenantId ?? (await getCentralTenantId());
 
   if (input.id) {
     const existing = await prisma.user.findUnique({
       where: { id: input.id },
       include: {
-        memberships: {
-          include: { role: true, tenant: true },
-        },
+        memberships: true,
       },
     });
     if (!existing) throw new Error("USER_NOT_FOUND");
 
-    changedName = existing.name !== input.name;
+    changedName = (existing.name ?? "") !== (input.name ?? "");
+
+    const existingMembershipForContext = existing.memberships.find(
+      (m) => m.tenantId === effectiveTenantId
+    );
+    changedRole = existingMembershipForContext?.roleId !== input.roleId;
 
     user = await prisma.user.update({
       where: { id: existing.id },
@@ -255,16 +255,8 @@ export async function createOrUpdateUserAction(rawData: unknown) {
         avatarUrl: input.avatarUrl ?? null,
         image: input.avatarUrl ?? existing.image ?? null,
       },
+      select: { id: true, name: true, email: true, isActive: true },
     });
-
-    const effectiveTenantId =
-      input.tenantId ?? (await getCentralTenantId());
-
-    const existingMembershipForContext = existing.memberships.find(
-      (m) => m.tenantId === effectiveTenantId
-    );
-
-    changedRole = existingMembershipForContext?.roleId !== input.roleId;
 
     if (plainPassword) {
       await changeUserPasswordInternal(existing.id, plainPassword);
@@ -288,9 +280,7 @@ export async function createOrUpdateUserAction(rawData: unknown) {
       headers: await headers(),
     });
 
-    if (!signUpResult?.user) {
-      throw new Error("FAILED_TO_CREATE_USER_AUTH");
-    }
+    if (!signUpResult?.user) throw new Error("FAILED_TO_CREATE_USER_AUTH");
 
     user = await prisma.user.update({
       where: { id: signUpResult.user.id },
@@ -302,34 +292,33 @@ export async function createOrUpdateUserAction(rawData: unknown) {
         avatarUrl: input.avatarUrl ?? null,
         image: input.avatarUrl ?? null,
       },
+      select: { id: true, name: true, email: true, isActive: true },
     });
 
     changedPassword = true;
+
+    // Create setup-password token (better than sending temp password)
     const { token } = await issuePasswordSetupToken(user.id);
 
-    const baseAppUrl =
+    const base =
       loginUrl ||
       process.env.NEXT_PUBLIC_APP_URL ||
       process.env.APP_URL ||
       "http://localhost:3000";
 
-    passwordSetupUrl = `${baseAppUrl.replace(
-      /\/+$/,
-      ""
-    )}/setup-password?token=${encodeURIComponent(token)}`;
+    passwordSetupUrl = `${base.replace(/\/+$/, "")}/setup-password?token=${encodeURIComponent(
+      token
+    )}`;
   }
 
-  const effectiveTenantId =
-    input.tenantId ?? (await getCentralTenantId());
+  if (!user) throw new Error("FAILED_TO_SAVE_USER");
 
+  // Membership upsert
   await prisma.membership.upsert({
     where: {
       tenantId_userId: { tenantId: effectiveTenantId, userId: user.id },
     },
-    update: {
-      roleId: input.roleId,
-      status: MembershipStatus.ACTIVE,
-    },
+    update: { roleId: input.roleId, status: MembershipStatus.ACTIVE },
     create: {
       tenantId: effectiveTenantId,
       userId: user.id,
@@ -338,8 +327,9 @@ export async function createOrUpdateUserAction(rawData: unknown) {
     },
   });
 
-  const status = user.isActive ? "ACTIVE" : "INACTIVE";
-  const kind = input.id ? ("updated" as const) : ("created" as const);
+  // Email: created vs updated
+  const status: UserStatus = user.isActive ? "ACTIVE" : "INACTIVE";
+  const kind: UserAccountKind = input.id ? "updated" : "created";
 
   await sendEmail({
     to: user.email,
@@ -350,25 +340,27 @@ export async function createOrUpdateUserAction(rawData: unknown) {
       email: user.email,
       status,
       roleName: role.name,
+      // do NOT send password; use setup link
       password: undefined,
+
       changedName: kind === "updated" ? changedName : undefined,
       changedPassword: kind === "updated" ? changedPassword : undefined,
       changedRole: kind === "updated" ? changedRole : undefined,
+
       tenantName,
       tenantDomain,
       loginUrl: passwordSetupUrl ?? loginUrl,
     }),
   });
+
+  return { ok: true, userId: user.id };
 }
 
 /* ------------------------------------------------------------------
  * DELETE USER
  * ------------------------------------------------------------------ */
 
-export async function deleteUserAction(input: {
-  userId: string;
-  tenantId?: string | null;
-}) {
+export async function deleteUserAction(input: { userId: string; tenantId?: string | null }) {
   const tenantId = input.tenantId ?? null;
   const { actorId } = await authorizeUserAction(tenantId, ["users.delete"]);
 
@@ -376,9 +368,11 @@ export async function deleteUserAction(input: {
 
   const centralTenantId = await getCentralTenantId();
 
+  // CENTRAL: delete user record entirely
   if (!tenantId) {
     const centralRole = await prisma.role.findFirst({
       where: { key: "central_superadmin", tenantId: null },
+      select: { id: true },
     });
 
     if (centralRole) {
@@ -389,6 +383,7 @@ export async function deleteUserAction(input: {
           tenantId: centralTenantId,
           status: MembershipStatus.ACTIVE,
         },
+        select: { id: true },
       });
 
       if (isTargetCentralSuper) {
@@ -404,9 +399,10 @@ export async function deleteUserAction(input: {
     }
 
     await prisma.user.delete({ where: { id: input.userId } });
-    return;
+    return { ok: true };
   }
 
+  // TENANT: remove membership (and delete user if no memberships left)
   const tenantUsersCount = await prisma.membership.count({
     where: { tenantId, status: MembershipStatus.ACTIVE },
   });
@@ -423,6 +419,8 @@ export async function deleteUserAction(input: {
   if (remainingMemberships === 0) {
     await prisma.user.delete({ where: { id: input.userId } });
   }
+
+  return { ok: true };
 }
 
 /* ------------------------------------------------------------------
@@ -443,6 +441,7 @@ export async function toggleUserActiveAction(input: {
 
   const centralTenantId = await getCentralTenantId();
 
+  // if deactivating, ensure not last superadmin
   if (!input.newActive) {
     const memberships = await prisma.membership.findMany({
       where: { userId: input.userId },
@@ -450,11 +449,10 @@ export async function toggleUserActiveAction(input: {
     });
 
     for (const m of memberships) {
-      // ✅ FIXED: Null check for m.role
       if (m.role?.key === "central_superadmin") {
         const count = await prisma.membership.count({
           where: {
-            roleId: m.roleId ?? undefined, // Handle null roleId
+            roleId: m.roleId ?? undefined,
             tenantId: centralTenantId,
             status: MembershipStatus.ACTIVE,
           },
@@ -462,11 +460,10 @@ export async function toggleUserActiveAction(input: {
         if (count <= 1) throw new Error("CANNOT_DEACTIVATE_LAST_USER");
       }
 
-      // ✅ FIXED: Null check for m.role
       if (m.role?.key === "tenant_superadmin" && m.tenantId) {
         const count = await prisma.membership.count({
           where: {
-            roleId: m.roleId ?? undefined, // Handle null roleId
+            roleId: m.roleId ?? undefined,
             tenantId: m.tenantId,
             status: MembershipStatus.ACTIVE,
           },
@@ -479,10 +476,12 @@ export async function toggleUserActiveAction(input: {
   const user = await prisma.user.update({
     where: { id: input.userId },
     data: { isActive: input.newActive },
+    select: { id: true, name: true, email: true, isActive: true },
   });
 
-  const status = input.newActive ? "ACTIVE" : "INACTIVE";
-  const kind = input.newActive ? ("updated" as const) : ("deactivated" as const);
+  const status: UserStatus = input.newActive ? "ACTIVE" : "INACTIVE";
+  const kind: UserAccountKind = input.newActive ? "updated" : "deactivated";
+
   const { tenantName, tenantDomain, loginUrl } = await getTenantMeta(tenantId);
 
   await sendEmail({
@@ -498,6 +497,8 @@ export async function toggleUserActiveAction(input: {
       loginUrl,
     }),
   });
+
+  return { ok: true, userId: user.id, isActive: user.isActive };
 }
 
 /* ------------------------------------------------------------------
@@ -507,10 +508,7 @@ export async function toggleUserActiveAction(input: {
 export async function bootstrapUsersTab() {
   const centralTenantId = await getCentralTenantId();
 
-  const { actorId } = await authorizeUserAction(null, [
-    "users.view",
-    "view_security",
-  ]);
+  const { actorId } = await authorizeUserAction(null, ["users.view", "view_security"]);
 
   const centralTenant = await prisma.tenant.findUnique({
     where: { id: centralTenantId },
@@ -528,9 +526,7 @@ export async function bootstrapUsersTab() {
       user: true,
       role: true,
     },
-    orderBy: {
-      createdAt: "desc",
-    },
+    orderBy: { createdAt: "desc" },
   });
 
   type UserForClient = {
@@ -551,6 +547,7 @@ export async function bootstrapUsersTab() {
 
   for (const m of memberships) {
     const u = m.user;
+
     if (!usersMap.has(u.id)) {
       usersMap.set(u.id, {
         id: u.id,
@@ -563,15 +560,10 @@ export async function bootstrapUsersTab() {
       });
     }
 
-    // ✅ FIXED: Only add roles that actually exist
     if (m.role) {
-      const entry = usersMap.get(u.id)!;
-      entry.userRoles.push({
+      usersMap.get(u.id)!.userRoles.push({
         id: m.id,
-        role: {
-          key: m.role.key,
-          name: m.role.name,
-        },
+        role: { key: m.role.key, name: m.role.name },
         tenantId: m.tenantId,
       });
     }
@@ -581,11 +573,7 @@ export async function bootstrapUsersTab() {
 
   const assignableRolesRaw = await prisma.role.findMany({
     where: { tenantId: null },
-    select: {
-      id: true,
-      key: true,
-      name: true,
-    },
+    select: { id: true, key: true, name: true },
     orderBy: { name: "asc" },
   });
 
@@ -595,21 +583,19 @@ export async function bootstrapUsersTab() {
     name: r.name,
   }));
 
-  const centralRoleMap: Record<string, string> = assignableRoles.reduce(
-    (acc, r) => {
-      acc[r.id] = r.name;
-      return acc;
-    },
-    {} as Record<string, string>
-  );
+  const centralRoleMap: Record<string, string> = assignableRoles.reduce((acc, r) => {
+    acc[r.id] = r.name;
+    return acc;
+  }, {} as Record<string, string>);
 
   const prismaAny = prisma as any;
-  const companySettings = prismaAny.companySettings 
-    ? await prismaAny.companySettings.findFirst({ where: { tenantId: centralTenantId } }) 
+
+  const companySettings = prismaAny.companySettings
+    ? await prismaAny.companySettings.findFirst({ where: { tenantId: centralTenantId } })
     : null;
 
-  const brandingSettings = prismaAny.brandingSettings 
-    ? await prismaAny.brandingSettings.findFirst({ where: { tenantId: centralTenantId } }) 
+  const brandingSettings = prismaAny.brandingSettings
+    ? await prismaAny.brandingSettings.findFirst({ where: { tenantId: centralTenantId } })
     : null;
 
   return {

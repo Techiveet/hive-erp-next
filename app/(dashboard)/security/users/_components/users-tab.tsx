@@ -35,6 +35,12 @@ export function UsersTab({ permissionsList }: Props) {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
+  const reload = React.useCallback(async () => {
+    setError(null);
+    const result = (await bootstrapUsersTab()) as BootstrapPayload;
+    setData(result);
+  }, []);
+
   React.useEffect(() => {
     let mounted = true;
 
@@ -57,7 +63,9 @@ export function UsersTab({ permissionsList }: Props) {
   }, []);
 
   if (loading) {
-    return <div className="p-4 text-sm text-muted-foreground">Loading users…</div>;
+    return (
+      <div className="p-4 text-sm text-muted-foreground">Loading users…</div>
+    );
   }
 
   if (error || !data) {
@@ -79,6 +87,7 @@ export function UsersTab({ permissionsList }: Props) {
       permissions={permissionsList}
       companySettings={data.companySettings ?? undefined}
       brandingSettings={data.brandingSettings ?? undefined}
+      reloadUsers={reload} // ✅ NEW: live refetch after mutations
     />
   );
 }

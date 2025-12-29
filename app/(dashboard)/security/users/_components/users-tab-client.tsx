@@ -1,7 +1,9 @@
-// app/(dashboard)/security/users/_components/users-tab-client.tsx
 "use client";
 
 import * as React from "react";
+import type { ColumnDef } from "@tanstack/react-table";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 
 import {
   AlertDialog,
@@ -14,6 +16,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+
 import {
   Calendar,
   Eye,
@@ -29,6 +32,7 @@ import {
   User as UserIcon,
   X,
 } from "lucide-react";
+
 import {
   Dialog,
   DialogContent,
@@ -36,6 +40,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+
 import {
   createOrUpdateUserAction,
   deleteUserAction,
@@ -49,12 +54,9 @@ import {
   DataTable,
   type CompanySettingsInfo,
   type BrandingSettingsInfo,
-} from "@/components/data-table";
+} from "@/components/datatable/data-table";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { ColumnDef } from "@tanstack/react-table";
-import { toast } from "sonner";
-import { useRouter } from "next/navigation";
 
 // --- Types ---
 export type RoleLite = { id: string; key: string; name: string };
@@ -83,17 +85,16 @@ type Props = {
   permissions: string[];
   companySettings?: CompanySettingsInfo | null;
   brandingSettings?: BrandingSettingsInfo | null;
+
+  // ✅ NEW
+  reloadUsers: () => Promise<void>;
 };
 
 // --- Helpers ---
-
 function generateStrongPassword(length = 12) {
   const chars =
     "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*";
-  return Array.from(
-    { length },
-    () => chars[Math.floor(Math.random() * chars.length)]
-  ).join("");
+  return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
 function initials(name?: string | null, email?: string) {
@@ -130,8 +131,9 @@ export function UsersTabClient({
   permissions = [],
   companySettings,
   brandingSettings,
+  reloadUsers,
 }: Props) {
-  const router = useRouter();
+  const router = useRouter(); // keep if you use navigation elsewhere
   const [isPending, startTransition] = React.useTransition();
 
   const has = (key: string) => permissions.includes(key);
@@ -147,26 +149,19 @@ export function UsersTabClient({
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false);
   const [viewDialogOpen, setViewDialogOpen] = React.useState(false);
   const [bulkDialogOpen, setBulkDialogOpen] = React.useState(false);
-  const [bulkDeletableUsers, setBulkDeletableUsers] = React.useState<
-    UserForClient[]
-  >([]);
-  const [editingUser, setEditingUser] = React.useState<UserForClient | null>(
-    null
-  );
+
+  const [bulkDeletableUsers, setBulkDeletableUsers] = React.useState<UserForClient[]>([]);
+  const [editingUser, setEditingUser] = React.useState<UserForClient | null>(null);
   const [viewUser, setViewUser] = React.useState<UserForClient | null>(null);
 
-  // detect if currently editing a superadmin for this context
-  const isSuperadminEditing = React.useMemo(
-    () =>
-      editingUser
-        ? editingUser.userRoles.some((ur) =>
-            tenantId
-              ? ur.role.key === "tenant_superadmin" && ur.tenantId === tenantId
-              : ur.role.key === "central_superadmin"
-          )
-        : false,
-    [editingUser, tenantId]
-  );
+  const isSuperadminEditing = React.useMemo(() => {
+    if (!editingUser) return false;
+    return editingUser.userRoles.some((ur) =>
+      tenantId
+        ? ur.role.key === "tenant_superadmin" && ur.tenantId === tenantId
+        : ur.role.key === "central_superadmin"
+    );
+  }, [editingUser, tenantId]);
 
   // Form State
   const [formName, setFormName] = React.useState("");
@@ -182,15 +177,13 @@ export function UsersTabClient({
   const isProtectedUser = React.useCallback(
     (u: UserForClient) => {
       const isSelf = u.id === currentUserId;
-      const isCentralSuperadmin = u.userRoles.some(
-        (ur) => ur.role.key === "central_superadmin"
-      );
+      const isCentralSuperadmin = u.userRoles.some((ur) => ur.role.key === "central_superadmin");
       const isTenantSuperadmin = tenantId
         ? u.userRoles.some(
-            (ur) =>
-              ur.role.key === "tenant_superadmin" && ur.tenantId === tenantId
+            (ur) => ur.role.key === "tenant_superadmin" && ur.tenantId === tenantId
           )
         : false;
+
       return isSelf || isCentralSuperadmin || isTenantSuperadmin;
     },
     [currentUserId, tenantId]
@@ -202,9 +195,7 @@ export function UsersTabClient({
       return r?.role.name ?? "Member";
     }
 
-    const centralLike = u.userRoles.find((ur) =>
-      ur.role.key.startsWith("central_")
-    );
+    const centralLike = u.userRoles.find((ur) => ur.role.key.startsWith("central_"));
     if (centralLike) return centralLike.role.name;
 
     return u.userRoles[0]?.role.name ?? "User";
@@ -253,9 +244,7 @@ export function UsersTabClient({
     }
 
     const primaryRoleName = getPrimaryRoleName(user);
-    const roleEntry = Object.entries(centralRoleMap).find(
-      ([, name]) => name === primaryRoleName
-    );
+    const roleEntry = Object.entries(centralRoleMap).find(([, name]) => name === primaryRoleName);
     const resolvedRoleId = roleEntry ? roleEntry[0] : undefined;
 
     setFormRoleId(resolvedRoleId ?? "");
@@ -300,11 +289,7 @@ export function UsersTabClient({
 
     const skipPasswordChange = isEdit && isSuperadminEditing;
 
-    if (
-      !skipPasswordChange &&
-      formPassword &&
-      formPassword !== formConfirmPassword
-    ) {
+    if (!skipPasswordChange && formPassword && formPassword !== formConfirmPassword) {
       toast.error("Passwords do not match");
       return;
     }
@@ -314,9 +299,7 @@ export function UsersTabClient({
       return;
     }
 
-    const passwordToSend = skipPasswordChange
-      ? null
-      : formPassword || null;
+    const passwordToSend = skipPasswordChange ? null : formPassword || null;
 
     startTransition(async () => {
       try {
@@ -329,56 +312,52 @@ export function UsersTabClient({
           tenantId: tenantId ?? null,
           avatarUrl: formAvatar,
         });
+
         toast.success(isEdit ? "User updated successfully" : "User created");
         setCreateDialogOpen(false);
-        router.refresh();
+
+        // ✅ IMPORTANT: refresh users list immediately
+        await reloadUsers();
       } catch (err: any) {
-        toast.error(err.message || "Failed to save user.");
+        toast.error(err?.message || "Failed to save user.");
       }
     });
   }
 
   function handleBulkDeleteConfirm() {
     if (!canDeleteUsers) return;
+
     startTransition(async () => {
-      if (!bulkDeletableUsers.length) {
+      try {
+        if (!bulkDeletableUsers.length) {
+          setBulkDialogOpen(false);
+          return;
+        }
+
+        let errors = 0;
+        await Promise.all(
+          bulkDeletableUsers.map(async (u) => {
+            try {
+              await deleteUserAction({ userId: u.id, tenantId });
+            } catch {
+              errors++;
+            }
+          })
+        );
+
+        if (errors > 0) toast.warning("Some users could not be deleted.");
+        else toast.success("Selected users deleted.");
+
         setBulkDialogOpen(false);
-        return;
+        setBulkDeletableUsers([]);
+
+        // ✅ IMPORTANT: refresh users list immediately
+        await reloadUsers();
+      } catch {
+        toast.error("Failed to delete selected users.");
       }
-      let errors = 0;
-      await Promise.all(
-        bulkDeletableUsers.map(async (u) => {
-          try {
-            await deleteUserAction({ userId: u.id, tenantId });
-          } catch {
-            errors++;
-          }
-        })
-      );
-      router.refresh();
-      if (errors > 0) toast.warning("Some users could not be deleted.");
-      else toast.success("Selected users deleted.");
-      setBulkDialogOpen(false);
-      setBulkDeletableUsers([]);
     });
   }
-
-  const [isBusy, setIsBusy] = React.useState(false);
-  const [bulkDialogOpenState, setBulkDialogOpenState] =
-    React.useState(false);
-
-  const [bulkDialogLocalOpen, setBulkDialogLocalOpen] =
-    React.useState(false);
-
-  const [internalBulkOpen, setInternalBulkOpen] =
-    React.useState(false);
-
-  const [isBusyState, setIsBusyState] = React.useState(false);
-
-  // For DataTable busy overlay we just reuse isPending
-  const tableBusy = isPending || isBusy || isBusyState;
-
-  const [bulkDialogFlag, setBulkDialogFlag] = React.useState(false);
 
   const columns = React.useMemo<ColumnDef<UserForClient>[]>(() => {
     return [
@@ -391,18 +370,13 @@ export function UsersTabClient({
                 table.getIsAllPageRowsSelected() ||
                 (table.getIsSomePageRowsSelected() && "indeterminate")
               }
-              onCheckedChange={(val) =>
-                table.toggleAllPageRowsSelected(!!val)
-              }
+              onCheckedChange={(val) => table.toggleAllPageRowsSelected(!!val)}
             />
           </div>
         ),
         cell: ({ row }) => (
           <div className="flex justify-center">
-            <Checkbox
-              checked={row.getIsSelected()}
-              onCheckedChange={(val) => row.toggleSelected(!!val)}
-            />
+            <Checkbox checked={row.getIsSelected()} onCheckedChange={(val) => row.toggleSelected(!!val)} />
           </div>
         ),
       },
@@ -419,24 +393,17 @@ export function UsersTabClient({
               {hasAvatar ? (
                 <div className="h-9 w-9 overflow-hidden rounded-full ring-2 ring-primary/30">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={u.avatarUrl!}
-                    alt={u.name || u.email}
-                    className="h-full w-full object-cover"
-                  />
+                  <img src={u.avatarUrl!} alt={u.name || u.email} className="h-full w-full object-cover" />
                 </div>
               ) : (
                 <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary ring-2 ring-background">
                   {initials(u.name, u.email)}
                 </div>
               )}
+
               <div className="flex flex-col">
-                <span className="text-sm font-medium text-foreground">
-                  {u.name || "Unknown"}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {u.email}
-                </span>
+                <span className="text-sm font-medium text-foreground">{u.name || "Unknown"}</span>
+                <span className="text-xs text-muted-foreground">{u.email}</span>
               </div>
             </div>
           );
@@ -458,51 +425,44 @@ export function UsersTabClient({
         accessorFn: (row) => (row.isActive ? "Active" : "Inactive"),
         cell: ({ row }) => {
           const u = row.original;
-          const disabled =
-            isProtectedUser(u) || isPending || !canToggleUserActive;
+          const disabled = isProtectedUser(u) || isPending || !canToggleUserActive;
 
           return (
             <div className="flex items-center gap-2">
-            <Switch
-  checked={u.isActive}
-  disabled={disabled}
-  onCheckedChange={() =>
-    startTransition(async () => {
-      try {
-        await toggleUserActiveAction({
-          userId: u.id,
-          newActive: !u.isActive,
-          tenantId,
-        });
+              <Switch
+                checked={u.isActive}
+                disabled={disabled}
+                onCheckedChange={() =>
+                  startTransition(async () => {
+                    try {
+                      await toggleUserActiveAction({
+                        userId: u.id,
+                        newActive: !u.isActive,
+                        tenantId,
+                      });
 
-        router.refresh();
-        toast.success(
-          `User ${!u.isActive ? "activated" : "deactivated"}`
-        );
-      } catch (err: any) {
-        const msg = err?.message || "";
+                      toast.success(`User ${!u.isActive ? "activated" : "deactivated"}`);
 
-        if (msg.includes("CANNOT_DEACTIVATE_LAST_USER")) {
-          toast.error(
-            "You cannot deactivate the last active admin/user in this context."
-          );
-        } else if (msg.includes("CANNOT_DEACTIVATE_SELF")) {
-          toast.error("You cannot deactivate your own account.");
-        } else if (msg.includes("FORBIDDEN_INSUFFICIENT_PERMISSIONS")) {
-          toast.error("You don't have permission to change this user.");
-        } else {
-          toast.error("Failed to update user status.");
-        }
-      }
-    })
-  }
-/>
+                      // ✅ IMPORTANT: refresh users list immediately
+                      await reloadUsers();
+                    } catch (err: any) {
+                      const msg = err?.message || "";
 
-              <span
-                className={`text-xs font-medium ${
-                  u.isActive ? "text-emerald-600" : "text-muted-foreground"
-                }`}
-              >
+                      if (msg.includes("CANNOT_DEACTIVATE_LAST_USER")) {
+                        toast.error("You cannot deactivate the last active admin/user in this context.");
+                      } else if (msg.includes("CANNOT_DEACTIVATE_SELF")) {
+                        toast.error("You cannot deactivate your own account.");
+                      } else if (msg.includes("FORBIDDEN_INSUFFICIENT_PERMISSIONS")) {
+                        toast.error("You don't have permission to change this user.");
+                      } else {
+                        toast.error("Failed to update user status.");
+                      }
+                    }
+                  })
+                }
+              />
+
+              <span className={`text-xs font-medium ${u.isActive ? "text-emerald-600" : "text-muted-foreground"}`}>
                 {u.isActive ? "Active" : "Inactive"}
               </span>
             </div>
@@ -514,9 +474,7 @@ export function UsersTabClient({
         header: "Joined",
         accessorFn: (row) => formatCreatedAt(row.createdAt),
         cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground">
-            {formatCreatedAt(row.original.createdAt)}
-          </span>
+          <span className="text-xs text-muted-foreground">{formatCreatedAt(row.original.createdAt)}</span>
         ),
       },
       {
@@ -532,7 +490,6 @@ export function UsersTabClient({
 
           return (
             <div className="flex items-center justify-end gap-1">
-              {/* VIEW */}
               <Button
                 variant="ghost"
                 size="icon"
@@ -541,14 +498,9 @@ export function UsersTabClient({
                 disabled={viewDisabled}
                 title={viewDisabled ? "No permission" : "View Details"}
               >
-                {viewDisabled ? (
-                  <Lock className="h-3 w-3 opacity-70" />
-                ) : (
-                  <Eye className="h-4 w-4" />
-                )}
+                {viewDisabled ? <Lock className="h-3 w-3 opacity-70" /> : <Eye className="h-4 w-4" />}
               </Button>
 
-              {/* EDIT */}
               <Button
                 variant="ghost"
                 size="icon"
@@ -557,14 +509,9 @@ export function UsersTabClient({
                 disabled={editDisabled}
                 title={editDisabled ? "No permission" : "Edit User"}
               >
-                {editDisabled ? (
-                  <Lock className="h-3 w-3 opacity-70" />
-                ) : (
-                  <Pencil className="h-4 w-4" />
-                )}
+                {editDisabled ? <Lock className="h-3 w-3 opacity-70" /> : <Pencil className="h-4 w-4" />}
               </Button>
 
-              {/* DELETE */}
               <AlertDialog>
                 <AlertDialogTrigger asChild>
                   <Button
@@ -574,30 +521,33 @@ export function UsersTabClient({
                     disabled={deleteDisabled}
                     title={deleteDisabled ? "No permission" : "Delete User"}
                   >
-                    {deleteDisabled ? (
-                      <Lock className="h-3 w-3 opacity-50" />
-                    ) : (
-                      <Trash2 className="h-4 w-4" />
-                    )}
+                    {deleteDisabled ? <Lock className="h-3 w-3 opacity-50" /> : <Trash2 className="h-4 w-4" />}
                   </Button>
                 </AlertDialogTrigger>
+
                 <AlertDialogContent>
                   <AlertDialogHeader>
                     <AlertDialogTitle>Delete User?</AlertDialogTitle>
                     <AlertDialogDescription>
-                      Are you sure you want to delete <b>{u.email}</b>? This
-                      action cannot be undone.
+                      Are you sure you want to delete <b>{u.email}</b>? This action cannot be undone.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
+
                   <AlertDialogFooter>
                     <AlertDialogCancel>Cancel</AlertDialogCancel>
                     <AlertDialogAction
                       className="bg-red-600 text-white"
                       onClick={() =>
                         startTransition(async () => {
-                          await deleteUserAction({ userId: u.id, tenantId });
-                          router.refresh();
-                          toast.success("User deleted");
+                          try {
+                            await deleteUserAction({ userId: u.id, tenantId });
+                            toast.success("User deleted");
+
+                            // ✅ IMPORTANT: refresh users list immediately
+                            await reloadUsers();
+                          } catch (e: any) {
+                            toast.error(e?.message || "Failed to delete user.");
+                          }
                         })
                       }
                     >
@@ -614,12 +564,12 @@ export function UsersTabClient({
   }, [
     isProtectedUser,
     isPending,
-    router,
     tenantId,
     canToggleUserActive,
     canUpdateUsers,
     canDeleteUsers,
     canViewUsers,
+    reloadUsers,
   ]);
 
   return (
@@ -627,19 +577,12 @@ export function UsersTabClient({
       {/* HEADER */}
       <div className="flex flex-wrap items-center justify-between gap-4 p-1">
         <div>
-          <h2 className="text-lg font-bold tracking-tight">
-            {isTenantContext ? "Team Members" : "System Users"}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Manage access for {tenantName || "the platform"}.
-          </p>
+          <h2 className="text-lg font-bold tracking-tight">{isTenantContext ? "Team Members" : "System Users"}</h2>
+          <p className="text-sm text-muted-foreground">Manage access for {tenantName || "the platform"}.</p>
         </div>
 
         {canCreateUsers && (
-          <Button
-            onClick={openCreate}
-            className="bg-indigo-600 text-white shadow-sm hover:bg-indigo-700"
-          >
+          <Button onClick={openCreate} className="bg-indigo-600 text-white shadow-sm hover:bg-indigo-700">
             <PlusCircle className="mr-2 h-4 w-4" />
             Add User
           </Button>
@@ -653,13 +596,11 @@ export function UsersTabClient({
           data={users}
           searchColumnId="name"
           searchPlaceholder="Filter..."
-          onRefresh={() => router.refresh()}
+          onRefresh={reloadUsers} // ✅ IMPORTANT: re-fetch, not router.refresh
           fileName="users"
           companySettings={companySettings ?? undefined}
           brandingSettings={
-            brandingSettings?.darkLogoUrl
-              ? { darkLogoUrl: brandingSettings.darkLogoUrl }
-              : undefined
+            brandingSettings?.darkLogoUrl ? { darkLogoUrl: brandingSettings.darkLogoUrl } : undefined
           }
           onDeleteRows={async (rows) => {
             if (!canDeleteUsers) {
@@ -680,9 +621,7 @@ export function UsersTabClient({
               <UserIcon className="h-5 w-5 text-primary" />
               {editingUser ? "Edit User" : "Create User"}
             </DialogTitle>
-            <DialogDescription>
-              Assign a role, credentials and profile photo.
-            </DialogDescription>
+            <DialogDescription>Assign a role, credentials and profile photo.</DialogDescription>
           </DialogHeader>
 
           <form onSubmit={handleSubmit} className="space-y-5">
@@ -694,17 +633,14 @@ export function UsersTabClient({
                   <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border bg-background shadow-sm">
                     {formAvatar ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={formAvatar}
-                        alt={formName || formEmail || "Avatar"}
-                        className="h-full w-full object-cover"
-                      />
+                      <img src={formAvatar} alt={formName || formEmail || "Avatar"} className="h-full w-full object-cover" />
                     ) : (
                       <span className="text-xl font-semibold text-primary">
                         {initials(formName, formEmail)}
                       </span>
                     )}
                   </div>
+
                   {formAvatar && (
                     <button
                       type="button"
@@ -717,16 +653,8 @@ export function UsersTabClient({
                 </div>
 
                 <div className="flex flex-col gap-2 text-center">
-                  <p className="text-xs text-muted-foreground">
-                    Profile photo (optional)
-                  </p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={handlePickAvatar}
-                    className="justify-center"
-                  >
+                  <p className="text-xs text-muted-foreground">Profile photo (optional)</p>
+                  <Button type="button" size="sm" variant="outline" onClick={handlePickAvatar} className="justify-center">
                     <ImageIcon className="mr-2 h-4 w-4" />
                     Choose from File Manager
                   </Button>
@@ -737,9 +665,7 @@ export function UsersTabClient({
               <div className="space-y-4">
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div className="space-y-1">
-                    <label className="text-xs font-medium uppercase text-muted-foreground">
-                      Name
-                    </label>
+                    <label className="text-xs font-medium uppercase text-muted-foreground">Name</label>
                     <input
                       className="w-full rounded border bg-background p-2 text-sm"
                       value={formName}
@@ -747,10 +673,9 @@ export function UsersTabClient({
                       required
                     />
                   </div>
+
                   <div className="space-y-1">
-                    <label className="text-xs font-medium uppercase text-muted-foreground">
-                      Email
-                    </label>
+                    <label className="text-xs font-medium uppercase text-muted-foreground">Email</label>
                     <input
                       type="email"
                       className="w-full rounded border bg-background p-2 text-sm"
@@ -763,9 +688,7 @@ export function UsersTabClient({
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-xs font-medium uppercase text-muted-foreground">
-                    Role
-                  </label>
+                  <label className="text-xs font-medium uppercase text-muted-foreground">Role</label>
 
                   <select
                     className="w-full rounded border bg-background p-2 text-sm"
@@ -774,14 +697,10 @@ export function UsersTabClient({
                     required
                     disabled={isSuperadminEditing}
                   >
-                    {!isSuperadminEditing && (
-                      <option value="">Select role...</option>
-                    )}
+                    {!isSuperadminEditing && <option value="">Select role...</option>}
 
                     {isSuperadminEditing && editingUser && formRoleId && (
-                      <option value={formRoleId}>
-                        {getPrimaryRoleName(editingUser)}
-                      </option>
+                      <option value={formRoleId}>{getPrimaryRoleName(editingUser)}</option>
                     )}
 
                     {!isSuperadminEditing &&
@@ -804,27 +723,21 @@ export function UsersTabClient({
             {/* Passwords */}
             <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
               <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-semibold uppercase text-muted-foreground">
-                  Credentials
-                </p>
+                <p className="text-xs font-semibold uppercase text-muted-foreground">Credentials</p>
+
                 {!isSuperadminEditing && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={handleGeneratePassword}
-                  >
+                  <Button type="button" variant="outline" size="sm" onClick={handleGeneratePassword}>
                     <RefreshCw className="mr-1 h-3 w-3" /> Generate Password
                   </Button>
                 )}
               </div>
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                {/* Password */}
                 <div className="space-y-1">
                   <label className="text-xs font-medium uppercase text-muted-foreground">
                     {editingUser ? "New Password" : "Password"}
                   </label>
+
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
@@ -834,26 +747,23 @@ export function UsersTabClient({
                       placeholder={editingUser ? "Leave blank to keep" : ""}
                       disabled={isSuperadminEditing && !!editingUser}
                     />
+
                     <button
                       type="button"
                       className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
                       onClick={() => setShowPassword((v) => !v)}
                       disabled={isSuperadminEditing && !!editingUser}
                     >
-                      {showPassword ? (
-                        <EyeOff className="h-4 w-4" />
-                      ) : (
-                        <Eye className="h-4 w-4" />
-                      )}
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                   </div>
                 </div>
 
-                {/* Confirm password */}
                 <div className="space-y-1">
                   <label className="text-xs font-medium uppercase text-muted-foreground">
                     Confirm Password
                   </label>
+
                   <div className="relative">
                     <input
                       type={showConfirmPassword ? "text" : "password"}
@@ -862,17 +772,14 @@ export function UsersTabClient({
                       onChange={(e) => setFormConfirmPassword(e.target.value)}
                       disabled={isSuperadminEditing && !!editingUser}
                     />
+
                     <button
                       type="button"
                       className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
                       onClick={() => setShowConfirmPassword((v) => !v)}
                       disabled={isSuperadminEditing && !!editingUser}
                     >
-                      {showConfirmPassword ? (
-                        <EyeOff className="h-4 w-4" />
-                      ) : (
-                        <Eye className="h-4 w-4" />
-                      )}
+                      {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
                   </div>
                 </div>
@@ -880,18 +787,13 @@ export function UsersTabClient({
 
               {isSuperadminEditing && (
                 <p className="pt-1 text-[11px] text-amber-600">
-                  Super administrator password cannot be changed from this
-                  screen.
+                  Super administrator password cannot be changed from this screen.
                 </p>
               )}
             </div>
 
             <div className="mt-2 flex justify-end gap-2 border-t pt-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setCreateDialogOpen(false)}
-              >
+              <Button type="button" variant="ghost" onClick={() => setCreateDialogOpen(false)}>
                 Cancel
               </Button>
               <Button type="submit" disabled={isPending}>
@@ -912,30 +814,24 @@ export function UsersTabClient({
             </DialogTitle>
             <DialogDescription>User account details</DialogDescription>
           </DialogHeader>
+
           {viewUser && (
             <div className="space-y-4 text-sm">
               <div className="flex flex-col items-center gap-3">
                 <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border bg-background shadow-sm">
                   {viewUser.avatarUrl ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={viewUser.avatarUrl}
-                      alt={viewUser.name || viewUser.email}
-                      className="h-full w-full object-cover"
-                    />
+                    <img src={viewUser.avatarUrl} alt={viewUser.name || viewUser.email} className="h-full w-full object-cover" />
                   ) : (
                     <span className="text-xl font-semibold text-primary">
                       {initials(viewUser.name, viewUser.email)}
                     </span>
                   )}
                 </div>
+
                 <div className="text-center">
-                  <p className="text-sm font-semibold">
-                    {viewUser.name || "Unnamed user"}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {getPrimaryRoleName(viewUser)}
-                  </p>
+                  <p className="text-sm font-semibold">{viewUser.name || "Unnamed user"}</p>
+                  <p className="text-xs text-muted-foreground">{getPrimaryRoleName(viewUser)}</p>
                 </div>
               </div>
 
@@ -946,10 +842,12 @@ export function UsersTabClient({
                   <Mail className="h-4 w-4 text-muted-foreground" />
                   <span>{viewUser.email}</span>
                 </div>
+
                 <div className="flex items-center gap-2">
                   <Shield className="h-4 w-4 text-muted-foreground" />
                   <span>{getPrimaryRoleName(viewUser)}</span>
                 </div>
+
                 <div className="flex items-center gap-2">
                   <Calendar className="h-4 w-4 text-muted-foreground" />
                   <span>Joined {formatCreatedAt(viewUser.createdAt)}</span>
@@ -959,16 +857,10 @@ export function UsersTabClient({
               <Separator />
 
               <div>
-                <p className="mb-1 text-xs font-semibold text-muted-foreground">
-                  All Roles
-                </p>
+                <p className="mb-1 text-xs font-semibold text-muted-foreground">All Roles</p>
                 <div className="flex flex-wrap gap-1">
                   {viewUser.userRoles.map((ur) => (
-                    <Badge
-                      key={ur.id}
-                      variant="secondary"
-                      className="text-[10px]"
-                    >
+                    <Badge key={ur.id} variant="secondary" className="text-[10px]">
                       {ur.role.name}
                     </Badge>
                   ))}
@@ -976,11 +868,7 @@ export function UsersTabClient({
               </div>
 
               <div className="flex justify-end pt-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setViewDialogOpen(false)}
-                >
+                <Button variant="outline" size="sm" onClick={() => setViewDialogOpen(false)}>
                   Close
                 </Button>
               </div>
@@ -995,26 +883,22 @@ export function UsersTabClient({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete selected users?</AlertDialogTitle>
             <AlertDialogDescription>
-              You are about to delete {bulkDeletableUsers.length} users. This
-              cannot be undone.
+              You are about to delete {bulkDeletableUsers.length} users. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
+
           <div className="mb-2 max-h-40 overflow-y-auto rounded border p-2 text-xs">
             {bulkDeletableUsers.map((u) => (
               <div key={u.id} className="flex items-center gap-2">
                 <span className="font-medium">{u.email}</span>
-                <span className="text-muted-foreground">
-                  ({getPrimaryRoleName(u)})
-                </span>
+                <span className="text-muted-foreground">({getPrimaryRoleName(u)})</span>
               </div>
             ))}
           </div>
+
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-red-600 text-white hover:bg-red-700"
-              onClick={handleBulkDeleteConfirm}
-            >
+            <AlertDialogAction className="bg-red-600 text-white hover:bg-red-700" onClick={handleBulkDeleteConfirm}>
               Delete Selected
             </AlertDialogAction>
           </AlertDialogFooter>
