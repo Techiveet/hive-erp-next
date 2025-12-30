@@ -82,7 +82,7 @@ export default function DataTableLoading({
           </div>
         </div>
 
-        {/* Footer / pagination skeleton */}
+        {/* Footer /a pagination skeleton */}
         <div className="p-4 border-t border-slate-100 dark:border-slate-800">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-2">

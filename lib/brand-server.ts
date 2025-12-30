@@ -6,6 +6,8 @@ import { cache } from "react";
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
 
+type HeadersLike = { get(name: string): string | null };
+
 const FALLBACK_BRAND = {
   titleText: "Hive",
   logoLightUrl: null as string | null,
@@ -17,37 +19,23 @@ const FALLBACK_BRAND = {
 function normalizeUrl(input: string | null | undefined): string | null {
   const url = (input ?? "").trim();
   if (!url) return null;
-
-  // Keep base64/data URIs as-is
   if (url.startsWith("data:")) return url;
-
-  // Absolute URL
   if (/^https?:\/\//i.test(url)) return url;
-
-  // Ensure leading slash for local paths
   return url.startsWith("/") ? url : `/${url}`;
 }
 
-function getBareHostFromHeaders(h: Headers): string {
-  // Prefer forwarded host in real deployments (reverse proxies)
+function getBareHostFromHeaders(h: HeadersLike): string {
   const forwarded = (h.get("x-forwarded-host") || "").toLowerCase().trim();
   const host = (forwarded || h.get("host") || "").toLowerCase().trim();
   return host.split(",")[0]?.split(":")[0] || "";
 }
 
 function isLocalHost(bareHost: string) {
-  return (
-    bareHost === "localhost" ||
-    bareHost === "127.0.0.1" ||
-    bareHost === "::1"
-  );
+  return bareHost === "localhost" || bareHost === "127.0.0.1" || bareHost === "::1";
 }
 
-/**
- * Cached per request in RSC. Safe: no cross-user leakage.
- */
 export const getBrandForRequest = cache(async () => {
-  const h = headers();
+  const h = await headers();
   const bareHost = getBareHostFromHeaders(h);
 
   // Resolve tenantId
@@ -67,36 +55,39 @@ export const getBrandForRequest = cache(async () => {
     tenantId = domain?.tenantId ?? null;
   }
 
-  // Fetch brand (tenant first, then central)
-  const brand =
-    (await prisma.brandSettings.findFirst({
-      where: { tenantId },
-      select: {
-        titleText: true,
-        logoLightUrl: true,
-        logoDarkUrl: true,
-        faviconUrl: true,
-        sidebarIconUrl: true,
-      },
-    })) ??
-    (await prisma.brandSettings.findFirst({
-      where: { tenantId: null },
-      select: {
-        titleText: true,
-        logoLightUrl: true,
-        logoDarkUrl: true,
-        faviconUrl: true,
-        sidebarIconUrl: true,
-      },
+  const selectBranding = {
+    titleText: true,
+    logoLightUrl: true,
+    logoDarkUrl: true,
+    faviconUrl: true,
+    sidebarIconUrl: true,
+  } as const;
+
+  // ✅ 1) tenant branding (only if tenantId is a string)
+  const tenantBranding = tenantId
+    ? await prisma.brandingSettings.findFirst({
+        where: { tenantId }, // tenantId is string here ✅
+        select: selectBranding,
+      })
+    : null;
+
+  // ✅ 2) fallback branding (central/default)
+  // Since tenantId is NOT nullable in your schema, we cannot do tenantId: null.
+  // So we simply fetch the first available "global" record.
+  // If you have a better flag (isDefault/scope), use that instead.
+  const fallbackBranding =
+    tenantBranding ??
+    (await prisma.brandingSettings.findFirst({
+      select: selectBranding,
     }));
 
-  if (!brand) return FALLBACK_BRAND;
+  if (!fallbackBranding) return FALLBACK_BRAND;
 
   return {
-    titleText: brand.titleText ?? FALLBACK_BRAND.titleText,
-    logoLightUrl: normalizeUrl(brand.logoLightUrl),
-    logoDarkUrl: normalizeUrl(brand.logoDarkUrl),
-    faviconUrl: normalizeUrl(brand.faviconUrl) ?? FALLBACK_BRAND.faviconUrl,
-    sidebarIconUrl: normalizeUrl(brand.sidebarIconUrl),
+    titleText: fallbackBranding.titleText ?? FALLBACK_BRAND.titleText,
+    logoLightUrl: normalizeUrl(fallbackBranding.logoLightUrl),
+    logoDarkUrl: normalizeUrl(fallbackBranding.logoDarkUrl),
+    faviconUrl: normalizeUrl(fallbackBranding.faviconUrl) ?? FALLBACK_BRAND.faviconUrl,
+    sidebarIconUrl: normalizeUrl(fallbackBranding.sidebarIconUrl),
   };
 });

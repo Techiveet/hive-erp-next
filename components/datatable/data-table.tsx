@@ -1,4 +1,4 @@
-// components/datatable.tsx
+// components/datatable/data-table.tsx
 "use client";
 
 import * as React from "react";
@@ -12,20 +12,18 @@ import {
   Printer,
   RotateCw,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import {
   ColumnDef,
-  ColumnFiltersState,
   Row,
+  RowSelectionState,
   SortingState,
   Table as TanTable,
   VisibilityState,
   flexRender,
   getCoreRowModel,
-  getFilteredRowModel,
-  getPaginationRowModel,
-  getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
 import {
@@ -45,18 +43,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -92,67 +85,6 @@ export type BrandingSettingsInfo = {
   darkLogoUrl?: string;
 };
 
-/* ----------------------------- Types & Props ----------------------------- */
-export type DataTableFilter = {
-  columnId: string;
-  title: string;
-  options: { label: string; value: string }[];
-};
-
-export interface DataTableProps<TData, TValue> {
-  columns: ColumnDef<TData, TValue>[];
-  data?: TData[];
-
-  title?: string;
-  description?: string;
-
-  // server mode
-  serverMode?: boolean;
-  totalEntries?: number;
-  onQueryChange?: (q: {
-    page: number; // 1-indexed
-    pageSize: number;
-    sortCol?: string;
-    sortDir?: "asc" | "desc";
-    search?: string;
-    dateFrom?: string;
-    dateTo?: string;
-  }) => void;
-
-  searchColumnId?: string;
-  searchPlaceholder?: string;
-  filters?: DataTableFilter[];
-
-  onDeleteRows?: (rows: TData[]) => Promise<void> | void;
-
-  pageSize?: number;
-  pageSizeOptions?: number[];
-
-  onRefresh?: () => Promise<void> | void;
-  onReload?: () => Promise<void> | void;
-
-  fileName?: string;
-  className?: string;
-
-  /** Scroll container selector ("body" by default). Pass false to disable. */
-  scrollTo?: string | false;
-
-  /** Optional date column id (e.g. "createdAt") for the date filter (client mode only) */
-  dateFilterColumnId?: string;
-
-  /** Company settings for PDF + Print headers */
-  companySettings?: CompanySettingsInfo;
-
-  /** Branding settings (e.g. dark logo) for PDF + Print */
-  brandingSettings?: BrandingSettingsInfo;
-
-  /** If true, auto-select all filtered rows when any filter/search/date is active */
-  autoSelectFilteredRows?: boolean;
-
-  /** Debounce for server search (ms) */
-  serverSearchDebounceMs?: number;
-}
-
 /* ---------------------------- small hooks ---------------------------- */
 function useDebouncedValue<T>(value: T, delay = 350) {
   const [debounced, setDebounced] = React.useState(value);
@@ -186,21 +118,14 @@ function getPrintableColumns<T>(table: TanTable<T>) {
     );
 }
 
-function getSafeFilteredRows<T>(table: TanTable<T>) {
-  const filtered = table.getFilteredRowModel?.();
-  return filtered?.rows?.length ? filtered.rows : table.getRowModel().rows;
-}
-
-/* ---------------------------- clipboard/export ---------------------------- */
+/* ---------------------------- clipboard/export helpers ---------------------------- */
 function toClipboardTable<T>(table: TanTable<T>, rows?: Row<T>[]) {
   const cols = getExportableColumns(table);
-  const dataRows = rows ?? getSafeFilteredRows(table);
+  const dataRows = rows ?? table.getRowModel().rows;
 
   const header = [
     "No.",
-    ...cols.map((c) =>
-      typeof c.columnDef.header === "string" ? c.columnDef.header : c.id
-    ),
+    ...cols.map((c) => (typeof c.columnDef.header === "string" ? c.columnDef.header : c.id)),
   ].join("\t");
 
   const lines = dataRows.map((r, rowIndex) =>
@@ -209,10 +134,7 @@ function toClipboardTable<T>(table: TanTable<T>, rows?: Row<T>[]) {
       ...cols.map((c) => {
         const meta = (c.columnDef.meta || {}) as any;
         const raw =
-          typeof meta.exportValue === "function"
-            ? meta.exportValue(r.original)
-            : r.getValue<any>(c.id);
-
+          typeof meta.exportValue === "function" ? meta.exportValue(r.original) : r.getValue<any>(c.id);
         if (raw == null) return "";
         return typeof raw === "object" ? JSON.stringify(raw) : String(raw);
       }),
@@ -243,13 +165,11 @@ async function copyTableToClipboard<T>(table: TanTable<T>, rows?: Row<T>[]) {
 
 function toCsv<T>(table: TanTable<T>, rows?: Row<T>[]) {
   const cols = getExportableColumns(table);
-  const dataRows = rows ?? getSafeFilteredRows(table);
+  const dataRows = rows ?? table.getRowModel().rows;
 
   const header = [
     "No.",
-    ...cols.map((c) =>
-      typeof c.columnDef.header === "string" ? c.columnDef.header : c.id
-    ),
+    ...cols.map((c) => (typeof c.columnDef.header === "string" ? c.columnDef.header : c.id)),
   ].join(",");
 
   const lines = dataRows.map((r, rowIndex) =>
@@ -258,17 +178,9 @@ function toCsv<T>(table: TanTable<T>, rows?: Row<T>[]) {
       ...cols.map((c) => {
         const meta = (c.columnDef.meta || {}) as any;
         const raw =
-          typeof meta.exportValue === "function"
-            ? meta.exportValue(r.original)
-            : r.getValue<any>(c.id);
+          typeof meta.exportValue === "function" ? meta.exportValue(r.original) : r.getValue<any>(c.id);
 
-        const s =
-          raw == null
-            ? ""
-            : typeof raw === "object"
-              ? JSON.stringify(raw)
-              : String(raw);
-
+        const s = raw == null ? "" : typeof raw === "object" ? JSON.stringify(raw) : String(raw);
         return /[,"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
       }),
     ].join(",")
@@ -294,18 +206,14 @@ async function exportXlsx<T>(table: TanTable<T>, fileName = "export", rows?: Row
   try {
     const XLSX = await import("xlsx");
     const cols = getExportableColumns(table);
-    const dataRows = rows ?? getSafeFilteredRows(table);
+    const dataRows = rows ?? table.getRowModel().rows;
 
     const data = dataRows.map((r, idx) => {
       const rowObj: Record<string, any> = { "No.": idx + 1 };
       cols.forEach((c) => {
-        const header =
-          typeof c.columnDef.header === "string" ? c.columnDef.header : c.id;
+        const header = typeof c.columnDef.header === "string" ? c.columnDef.header : c.id;
         const meta = (c.columnDef.meta || {}) as any;
-        const val =
-          typeof meta.exportValue === "function"
-            ? meta.exportValue(r.original)
-            : r.getValue(c.id);
+        const val = typeof meta.exportValue === "function" ? meta.exportValue(r.original) : r.getValue(c.id);
         rowObj[header] = val;
       });
       return rowObj;
@@ -322,6 +230,7 @@ async function exportXlsx<T>(table: TanTable<T>, fileName = "export", rows?: Row
   }
 }
 
+/* ------------------------ PDF export (with company) ------------------------ */
 async function loadImageAsDataUrl(url: string): Promise<string | null> {
   try {
     const res = await fetch(url);
@@ -338,7 +247,6 @@ async function loadImageAsDataUrl(url: string): Promise<string | null> {
   }
 }
 
-/* ------------------------ PDF export (with company) ------------------------ */
 async function exportPdf<T>(
   table: TanTable<T>,
   fileName = "export",
@@ -353,15 +261,13 @@ async function exportPdf<T>(
     const autoTableFn: any = autoTableMod.default || (autoTableMod as any);
 
     const cols = getExportableColumns(table);
-    const rows = rowsArg ?? getSafeFilteredRows(table);
+    const rows = rowsArg ?? table.getRowModel().rows;
     if (!rows.length) return;
 
     const head = [
       [
         "No.",
-        ...cols.map((c) =>
-          typeof c.columnDef.header === "string" ? c.columnDef.header : c.id
-        ),
+        ...cols.map((c) => (typeof c.columnDef.header === "string" ? c.columnDef.header : c.id)),
       ],
     ];
 
@@ -370,9 +276,8 @@ async function exportPdf<T>(
       ...cols.map((c) => {
         const meta = (c.columnDef.meta || {}) as any;
         const raw =
-          typeof meta.exportValue === "function"
-            ? meta.exportValue(r.original)
-            : r.getValue<any>(c.id);
+          typeof meta.exportValue === "function" ? meta.exportValue(r.original) : r.getValue<any>(c.id);
+
         if (raw == null) return "";
         return typeof raw === "object" ? JSON.stringify(raw) : String(raw);
       }),
@@ -381,8 +286,8 @@ async function exportPdf<T>(
     const doc = new JsPDFCtor({ unit: "mm", format: "a4" });
     const pageWidth = doc.internal.pageSize.getWidth();
 
+    // ---------- DARK LOGO (branding) ----------
     let headerTop = 14;
-
     if (brandingSettings?.darkLogoUrl) {
       const dataUrl = await loadImageAsDataUrl(brandingSettings.darkLogoUrl);
       if (dataUrl) {
@@ -395,12 +300,24 @@ async function exportPdf<T>(
       }
     }
 
+    // ---------- COMPANY HEADER ----------
     const cs = companySettings;
     let y = headerTop;
 
-    doc.setFontSize(12);
-    doc.text((cs?.companyName || cs?.legalName || fileName).toUpperCase(), 14, y);
-    y += 6;
+    if (cs?.companyName || cs?.legalName) {
+      doc.setFontSize(13);
+      doc.text(cs.companyName || cs.legalName || fileName.toUpperCase(), 14, y);
+      y += 6;
+      if (cs.legalName && cs.legalName !== cs.companyName) {
+        doc.setFontSize(10);
+        doc.text(cs.legalName, 14, y);
+        y += 5;
+      }
+    } else {
+      doc.setFontSize(12);
+      doc.text(fileName.toUpperCase(), 14, y);
+      y += 6;
+    }
 
     const addressParts = [
       cs?.addressLine1,
@@ -442,6 +359,13 @@ async function exportPdf<T>(
 
     y += 3;
 
+    const headerRow = head[0] as string[];
+    const columnStyles: Record<number, any> = {};
+    headerRow.forEach((label, idx) => {
+      if (label === "No.") columnStyles[idx] = { cellWidth: 10 };
+      if (label === "Permissions") columnStyles[idx] = { cellWidth: 80 };
+    });
+
     autoTableFn(doc, {
       head,
       body,
@@ -461,10 +385,10 @@ async function exportPdf<T>(
       alternateRowStyles: { fillColor: [250, 250, 250] },
       margin: { top: y, left: 12, right: 12, bottom: 12 },
       tableWidth: "auto",
+      columnStyles,
     });
 
     doc.save(`${fileName}.pdf`);
-    toast.success("PDF exported");
   } catch (err) {
     console.error(err);
     toast.error("PDF export needs: npm i jspdf jspdf-autotable");
@@ -472,62 +396,64 @@ async function exportPdf<T>(
 }
 
 /* -------------------------- Print (with company) ------------------------- */
-function escapeHtml(s: string) {
-  return s
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
 function buildCompanyHeaderHtml(
   companySettings: CompanySettingsInfo | undefined,
   brandingSettings: BrandingSettingsInfo | undefined,
   title: string
 ) {
   const cs = companySettings;
+  const lines: string[] = [];
 
-  const name = escapeHtml(cs?.companyName || cs?.legalName || title);
+  const name = cs?.companyName || cs?.legalName || title;
+  lines.push(`<h2 style="margin:0 0 4px 0;">${name}</h2>`);
+
+  if (cs?.legalName && cs.legalName !== cs.companyName) {
+    lines.push(`<div style="font-size:11px;margin-bottom:4px;">${cs.legalName}</div>`);
+  }
 
   const addressParts = [
     cs?.addressLine1,
     cs?.addressLine2,
     [cs?.city, cs?.state].filter(Boolean).join(", "),
     [cs?.postalCode, cs?.country].filter(Boolean).join(" "),
-  ]
-    .filter((line) => !!line && line.trim().length)
-    .map((l) => escapeHtml(l!));
+  ].filter((line) => !!line && line.trim().length);
+
+  if (addressParts.length) {
+    lines.push(
+      `<div style="font-size:10px;margin-bottom:2px;">${addressParts.map((l) => l!).join("<br/>")}</div>`
+    );
+  }
 
   const contactParts = [
     cs?.phone ? `Tel: ${cs.phone}` : null,
     cs?.email ? `Email: ${cs.email}` : null,
     cs?.website ? `Web: ${cs.website}` : null,
-  ]
-    .filter(Boolean)
-    .map((l) => escapeHtml(l!));
+  ].filter(Boolean);
+
+  if (contactParts.length) {
+    lines.push(`<div style="font-size:10px;margin-bottom:2px;">${contactParts.join(" &nbsp; ")}</div>`);
+  }
 
   const taxParts = [
     cs?.taxId ? `Tax ID: ${cs.taxId}` : null,
     cs?.registrationNumber ? `Reg No: ${cs.registrationNumber}` : null,
-  ]
-    .filter(Boolean)
-    .map((l) => escapeHtml(l!));
+  ].filter(Boolean);
+
+  if (taxParts.length) {
+    lines.push(`<div style="font-size:10px;margin-bottom:6px;">${taxParts.join(" &nbsp; ")}</div>`);
+  }
+
+  const textHtml = lines.join("");
 
   const logoHtml = brandingSettings?.darkLogoUrl
     ? `<div style="flex:0 0 auto;margin-left:24px;">
-         <img src="${escapeHtml(brandingSettings.darkLogoUrl)}" style="max-height:40px;object-fit:contain;" />
+         <img src="${brandingSettings.darkLogoUrl}" style="max-height:40px;object-fit:contain;" />
        </div>`
     : "";
 
   return `
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
-      <div>
-        <h2 style="margin:0 0 4px 0;">${name}</h2>
-        ${addressParts.length ? `<div style="font-size:10px;margin-bottom:4px;">${addressParts.join("<br/>")}</div>` : ""}
-        ${contactParts.length ? `<div style="font-size:10px;margin-bottom:2px;">${contactParts.join(" &nbsp; ")}</div>` : ""}
-        ${taxParts.length ? `<div style="font-size:10px;margin-bottom:6px;">${taxParts.join(" &nbsp; ")}</div>` : ""}
-      </div>
+      <div>${textHtml}</div>
       ${logoHtml}
     </div>
   `;
@@ -541,7 +467,7 @@ function printTable<T>(
   brandingSettings?: BrandingSettingsInfo
 ) {
   const cols = getPrintableColumns(table);
-  const dataRows = rows ?? getSafeFilteredRows(table);
+  const dataRows = rows ?? table.getRowModel().rows;
   if (!dataRows.length) return;
 
   const thStyle = 'style="text-align:left;padding:8px;border-bottom:1px solid #ddd"';
@@ -550,14 +476,7 @@ function printTable<T>(
   const th =
     `<th ${thStyle}>No.</th>` +
     cols
-      .map(
-        (c) =>
-          `<th ${thStyle}>${
-            typeof c.columnDef.header === "string"
-              ? escapeHtml(c.columnDef.header)
-              : escapeHtml(c.id)
-          }</th>`
-      )
+      .map((c) => `<th ${thStyle}>${typeof c.columnDef.header === "string" ? c.columnDef.header : c.id}</th>`)
       .join("");
 
   const trs = dataRows
@@ -567,21 +486,11 @@ function printTable<T>(
         .map((c) => {
           const meta = (c.columnDef.meta || {}) as any;
           const raw =
-            typeof meta.exportValue === "function"
-              ? meta.exportValue(r.original)
-              : r.getValue<any>(c.id);
-
-          const s =
-            raw == null
-              ? ""
-              : typeof raw === "object"
-                ? JSON.stringify(raw)
-                : String(raw);
-
-          return `<td ${tdStyle}>${escapeHtml(s)}</td>`;
+            typeof meta.exportValue === "function" ? meta.exportValue(r.original) : r.getValue<any>(c.id);
+          const s = raw == null ? "" : typeof raw === "object" ? JSON.stringify(raw) : String(raw);
+          return `<td ${tdStyle}>${s.replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</td>`;
         })
         .join("");
-
       return `<tr>${noCell}${tds}</tr>`;
     })
     .join("");
@@ -593,9 +502,7 @@ function printTable<T>(
 
   w.document.write(`
     <html>
-      <head>
-        <title>${escapeHtml(title)}</title>
-      </head>
+      <head><title>${title}</title></head>
       <body style="font-family:system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
         ${headerHtml}
         <table style="border-collapse:collapse;width:100%;font-size:12px;">
@@ -611,125 +518,118 @@ function printTable<T>(
   w.close();
 }
 
-/* ----------------------- Pagination helpers ----------------------- */
-function buildPageItems(current: number, totalPages: number, windowSize = 2) {
-  const pages: (number | string)[] = [];
-  if (totalPages <= 1) return [1];
-  const start = Math.max(1, current - windowSize);
-  const end = Math.min(totalPages, current + windowSize);
+/* ---------------------------- pagination range ---------------------------- */
+type PageItem = number | "…";
 
-  pages.push(1);
-  if (start > 2) pages.push("…");
+function buildPageItems(current: number, total: number): PageItem[] {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
 
-  for (let p = start; p <= end; p++) {
-    if (p !== 1 && p !== totalPages) pages.push(p);
-  }
+  const items: PageItem[] = [];
+  const push = (x: PageItem) => items.push(x);
 
-  if (end < totalPages - 1) pages.push("…");
-  pages.push(totalPages);
+  const left = Math.max(2, current - 1);
+  const right = Math.min(total - 1, current + 1);
 
-  const out: (number | string)[] = [];
-  for (const i of pages) {
-    const last = out[out.length - 1];
-    if (i === "…" && last === "…") continue;
-    if (typeof i === "number" && typeof last === "number" && i === last) continue;
-    out.push(i);
-  }
-  return out;
+  push(1);
+
+  if (left > 2) push("…");
+  for (let p = left; p <= right; p++) push(p);
+  if (right < total - 1) push("…");
+
+  push(total);
+
+  return items;
 }
 
-function scrollIntoViewIfNeeded(selector?: string | false) {
-  if (!selector) return;
-  try {
-    const el = document.querySelector(selector) ?? document.body;
-    el?.scrollIntoView({ behavior: "smooth", block: "start" });
-  } catch {}
-}
+/* ------------------------------------------------------------------ */
+/* ✅ SERVER MODE TABLE (controlled, NO AUTO-FETCH LOOP)               */
+/* + Floating selection bar (Copy / Export / Print / Delete / Clear)   */
+/* ------------------------------------------------------------------ */
 
-/* --------------------------------- UI ---------------------------------- */
+type ServerTableQuery = {
+  page: number; // 1-indexed
+  pageSize: number;
+  sortCol?: string;
+  sortDir?: "asc" | "desc";
+  search?: string;
+};
+
+type SelectionChangePayload<TData> = {
+  selectedRowIds: RowSelectionState;
+  selectedRowsOnPage: TData[];
+  selectedCountOnPage: number;
+};
+
 export function DataTable<TData, TValue>({
   columns,
   data = [],
-  title,
-  description,
-  serverMode = false,
   totalEntries = 0,
+  loading = false,
+
+  pageIndex = 1, // 1-indexed
+  pageSize = 5,
+  pageSizeOptions = [5, 10, 15, 25, 50, 100, 200],
+
   onQueryChange,
-  searchColumnId,
+
+  title = "Table",
+  description,
   searchPlaceholder = "Search...",
-  filters,
-  onDeleteRows,
-  pageSize = 10,
-  pageSizeOptions = [5, 10, 25, 50, 100],
-  onRefresh,
-  onReload,
   fileName = "export",
+  serverSearchDebounceMs = 400,
   className,
-  scrollTo = "body",
-  dateFilterColumnId,
+
+  enableRowSelection = false,
+  getRowId,
+  selectedRowIds: controlledRowSelection,
+  onSelectionChange,
+
+  onDeleteRows,
+
   companySettings,
   brandingSettings,
-  autoSelectFilteredRows = false,
-  serverSearchDebounceMs = 350,
-}: DataTableProps<TData, TValue>) {
-  const manual = !!serverMode;
+}: {
+  columns: ColumnDef<TData, TValue>[];
+  data: TData[];
+  totalEntries: number;
+  loading: boolean;
 
+  pageIndex: number; // 1-indexed
+  pageSize: number;
+  pageSizeOptions?: number[];
+
+  onQueryChange: (q: Partial<ServerTableQuery>) => void;
+
+  title?: string;
+  description?: string;
+  searchPlaceholder?: string;
+  fileName?: string;
+  serverSearchDebounceMs?: number;
+  className?: string;
+
+  enableRowSelection?: boolean;
+  getRowId?: (originalRow: TData, index: number) => string;
+  selectedRowIds?: RowSelectionState; // controlled (optional)
+  onSelectionChange?: (payload: SelectionChangePayload<TData>) => void;
+
+  onDeleteRows?: (rows: TData[]) => Promise<void> | void;
+
+  companySettings?: CompanySettingsInfo;
+  brandingSettings?: BrandingSettingsInfo;
+}) {
   const [sorting, setSorting] = React.useState<SortingState>([]);
-  const [columnFilters, setColumnFilters] = React.useState<ColumnFiltersState>([]);
   const [columnVisibility, setColumnVisibility] = React.useState<VisibilityState>({});
-  const [rowSelection, setRowSelection] = React.useState({});
-
-  const [pageIndexState, setPageIndexState] = React.useState(0);
-  const [pageSizeState, setPageSizeState] = React.useState(pageSize);
-
-  const [busy, setBusy] = React.useState(false);
-  const [refreshing, setRefreshing] = React.useState(false);
-
   const [searchValue, setSearchValue] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+
+  // selection (uncontrolled fallback)
+  const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({});
+  const effectiveRowSelection = controlledRowSelection ?? rowSelection;
+
   const debouncedSearch = useDebouncedValue(searchValue, serverSearchDebounceMs);
 
-  const [dateFrom, setDateFrom] = React.useState("");
-  const [dateTo, setDateTo] = React.useState("");
-
-  const coreRow = React.useMemo(() => getCoreRowModel(), []);
-  const filteredRow = React.useMemo(() => getFilteredRowModel(), []);
-  const sortedRow = React.useMemo(() => (!manual ? getSortedRowModel() : undefined), [manual]);
-  const pagedRow = React.useMemo(() => (!manual ? getPaginationRowModel() : undefined), [manual]);
-
-  // client-only date filtering (server mode should be handled via query)
-  const dateFilteredData = React.useMemo(() => {
-    if (manual) return data;
-
-    if (!dateFilterColumnId || (!dateFrom && !dateTo)) return data;
-
-    const fromTs = dateFrom ? new Date(dateFrom).getTime() : null;
-    const toTsRaw = dateTo ? new Date(dateTo).getTime() : null;
-    const toTs = toTsRaw != null ? toTsRaw + 24 * 60 * 60 * 1000 - 1 : null;
-
-    if (!fromTs && !toTs) return data;
-
-    return data.filter((row: any) => {
-      const raw = row?.[dateFilterColumnId as keyof typeof row] as any;
-      if (!raw) return false;
-
-      const d =
-        raw instanceof Date
-          ? raw
-          : typeof raw === "string" || typeof raw === "number"
-            ? new Date(raw)
-            : null;
-
-      if (!d) return false;
-
-      const t = d.getTime();
-      if (Number.isNaN(t)) return false;
-
-      if (fromTs && t < fromTs) return false;
-      if (toTs && t > toTs) return false;
-
-      return true;
-    });
-  }, [manual, data, dateFilterColumnId, dateFrom, dateTo]);
+  const pageIndex0 = Math.max(0, (pageIndex ?? 1) - 1);
+  const pageCount = Math.max(1, Math.ceil((totalEntries || 0) / (pageSize || 1)));
 
   async function withBusy<T>(fn: () => Promise<T> | T) {
     try {
@@ -740,184 +640,157 @@ export function DataTable<TData, TValue>({
     }
   }
 
+  // Inject a selection column when enabled
+  const selectionColumn = React.useMemo<ColumnDef<TData, TValue>>(
+    () => ({
+      id: "select",
+      enableSorting: false,
+      enableHiding: false,
+      size: 40,
+      header: ({ table }) => {
+        const hasRows = table.getRowModel().rows.length > 0;
+        const isAll = hasRows && table.getIsAllPageRowsSelected();
+        const isSome = hasRows && table.getIsSomePageRowsSelected();
+
+        return (
+          <div className="flex items-center justify-center">
+            <Checkbox
+              checked={isAll ? true : isSome ? "indeterminate" : false}
+              onCheckedChange={(v) => table.toggleAllPageRowsSelected(!!v)}
+              aria-label="Select all rows on this page"
+            />
+          </div>
+        );
+      },
+      cell: ({ row }) => (
+        <div className="flex items-center justify-center">
+          <Checkbox checked={row.getIsSelected()} onCheckedChange={(v) => row.toggleSelected(!!v)} aria-label="Select row" />
+        </div>
+      ),
+      meta: { exportable: false, printable: false, align: "center" },
+    }),
+    []
+  );
+
+  const mergedColumns = React.useMemo(() => {
+    if (!enableRowSelection) return columns;
+    const hasSelectAlready = columns.some((c: any) => c?.id === "select");
+    if (hasSelectAlready) return columns;
+    return [selectionColumn as any, ...columns];
+  }, [columns, enableRowSelection, selectionColumn]);
+
   const table = useReactTable({
-    data: dateFilteredData,
-    columns,
+    data,
+    columns: mergedColumns,
     state: {
       sorting,
-      columnFilters,
       columnVisibility,
-      rowSelection,
-      pagination: { pageIndex: pageIndexState, pageSize: pageSizeState },
+      rowSelection: enableRowSelection ? effectiveRowSelection : {},
+      pagination: { pageIndex: pageIndex0, pageSize },
     },
-    onSortingChange: setSorting,
-    onPaginationChange: (updater) => {
-      const next =
-        typeof updater === "function"
-          ? updater({ pageIndex: pageIndexState, pageSize: pageSizeState })
-          : updater;
 
-      setPageIndexState(next.pageIndex);
-      setPageSizeState(next.pageSize);
-
-      scrollIntoViewIfNeeded(scrollTo);
+    onSortingChange: (next) => {
+      setSorting(next);
+      const first = (Array.isArray(next) ? next[0] : undefined) as any;
+      onQueryChange({
+        page: 1,
+        sortCol: first?.id,
+        sortDir: first ? (first.desc ? "desc" : "asc") : undefined,
+      });
     },
-    onColumnFiltersChange: setColumnFilters,
+
     onColumnVisibilityChange: setColumnVisibility,
-    onRowSelectionChange: setRowSelection,
-    getCoreRowModel: coreRow,
-    getFilteredRowModel: filteredRow,
-    ...(sortedRow ? { getSortedRowModel: sortedRow } : {}),
-    ...(pagedRow ? { getPaginationRowModel: pagedRow } : {}),
-    manualSorting: manual,
-    manualPagination: manual,
-    manualFiltering: false,
-    initialState: !manual ? { pagination: { pageSize } } : undefined,
+
+    enableRowSelection: enableRowSelection,
+    onRowSelectionChange: enableRowSelection
+      ? (updater) => {
+          const next =
+            typeof updater === "function" ? (updater as any)(effectiveRowSelection) : (updater as RowSelectionState);
+
+          const selectedRowsOnPage = table
+            .getRowModel()
+            .rows.filter((r) => !!next[r.id])
+            .map((r) => r.original);
+
+          if (controlledRowSelection) {
+            onSelectionChange?.({
+              selectedRowIds: next,
+              selectedRowsOnPage,
+              selectedCountOnPage: selectedRowsOnPage.length,
+            });
+          } else {
+            setRowSelection(next);
+            onSelectionChange?.({
+              selectedRowIds: next,
+              selectedRowsOnPage,
+              selectedCountOnPage: selectedRowsOnPage.length,
+            });
+          }
+        }
+      : undefined,
+
+    getRowId:
+      getRowId ??
+      ((row: TData, index: number) => {
+        const anyRow = row as any;
+        return String(anyRow?.id ?? anyRow?.uuid ?? anyRow?.key ?? index);
+      }),
+
+    getCoreRowModel: getCoreRowModel(),
+    manualPagination: true,
+    manualSorting: true,
+    pageCount,
   });
 
-  // ✅ server mode: single source of truth for query calls (debounced)
+  // ✅ only search triggers query change
   React.useEffect(() => {
-    if (!manual || !onQueryChange) return;
-
-    const first = sorting[0];
-
     onQueryChange({
-      page: pageIndexState + 1,
-      pageSize: pageSizeState,
-      sortCol: first?.id,
-      sortDir: first?.desc ? "desc" : "asc",
-      search: searchColumnId ? (debouncedSearch || "") : undefined,
-      dateFrom: dateFrom || undefined,
-      dateTo: dateTo || undefined,
+      page: 1,
+      search: debouncedSearch?.trim() ? debouncedSearch.trim() : "",
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    manual,
-    onQueryChange,
-    pageIndexState,
-    pageSizeState,
-    sorting,
-    debouncedSearch,
-    searchColumnId,
-    dateFrom,
-    dateTo,
-  ]);
+  }, [debouncedSearch]);
 
-  // ✅ optional: auto-select filtered rows when filters/search/date active
-  React.useEffect(() => {
-    if (!autoSelectFilteredRows) return;
+  const canPrev = pageIndex0 > 0;
+  const canNext = pageIndex0 + 1 < pageCount;
 
-    const hasColFilters = columnFilters.length > 0;
-    const hasSearch = !!(
-      searchColumnId &&
-      (manual
-        ? debouncedSearch
-        : ((table.getColumn(searchColumnId)?.getFilterValue() as string) ?? ""))
-    );
-    const hasDate = !!(dateFrom || dateTo);
+  const currentPage = pageIndex0 + 1;
+  const pageItems = React.useMemo(() => buildPageItems(currentPage, pageCount), [currentPage, pageCount]);
 
-    if (!hasColFilters && !hasSearch && !hasDate) {
-      table.resetRowSelection();
-      return;
-    }
-
-    table.resetRowSelection();
-    const rows = getSafeFilteredRows(table);
-    rows.forEach((r) => r.toggleSelected(true));
-  }, [
-    autoSelectFilteredRows,
-    columnFilters,
-    manual,
-    debouncedSearch,
-    searchColumnId,
-    dateFrom,
-    dateTo,
-    table,
-  ]);
-
-  const selectedRows = table.getSelectedRowModel().rows ?? [];
-  const selectedCount = selectedRows.length;
-  const hasSelection = selectedCount > 0;
-
-  const refreshFn = onRefresh ?? onReload;
-
-  const page = pageIndexState;
-  const ps = pageSizeState;
-
-  const clientTotal = table.getFilteredRowModel().rows.length;
-  const total = manual ? totalEntries : clientTotal;
-  const pageCount = Math.max(1, Math.ceil((total || 0) / (ps || 1)));
-
-  const startEntry = total === 0 ? 0 : page * ps + 1;
-  const endEntry = total === 0 ? 0 : Math.min((page + 1) * ps, total);
-
-  const canPrev = manual ? page > 0 : table.getCanPreviousPage();
-  const canNext = manual ? page + 1 < pageCount : table.getCanNextPage();
-
-  const currentSearchVal = searchColumnId
-    ? manual
-      ? searchValue
-      : ((table.getColumn(searchColumnId)?.getFilterValue() as string) ?? "")
-    : "";
-
-  const anyFilterOrSearch =
-    columnFilters.length > 0 ||
-    !!dateFrom ||
-    !!dateTo ||
-    (searchColumnId ? !!currentSearchVal : false);
-
-  const isOverlayActive = refreshing || busy;
-
-  const clearSearch = () => {
-    if (!searchColumnId) return;
-    if (manual) {
-      setSearchValue("");
-      setPageIndexState(0);
-    } else {
-      table.getColumn(searchColumnId)?.setFilterValue("");
-      table.setPageIndex(0);
-    }
+  const sendPage = (page: number) => {
+    const safe = Math.max(1, Math.min(pageCount, page));
+    onQueryChange({ page: safe });
   };
 
-  function resetFiltersAndState() {
-    setColumnFilters([]);
-    setDateFrom("");
-    setDateTo("");
-    setSorting([]);
-    table.resetRowSelection();
+  const sendPageSize = (nextSize: number) => {
+    onQueryChange({ page: 1, pageSize: nextSize });
+  };
 
-    if (searchColumnId) {
-      if (manual) setSearchValue("");
-      else table.getColumn(searchColumnId)?.setFilterValue("");
+  // Selection helpers (page-only)
+  const selectedRowsOnPage = enableRowSelection ? table.getSelectedRowModel().rows : [];
+  const selectedCount = selectedRowsOnPage.length;
+  const hasSelection = enableRowSelection && selectedCount > 0;
+
+  const clearSelection = () => {
+    if (!enableRowSelection) return;
+    if (controlledRowSelection) {
+      onSelectionChange?.({ selectedRowIds: {}, selectedRowsOnPage: [], selectedCountOnPage: 0 });
+      return;
     }
+    setRowSelection({});
+    onSelectionChange?.({ selectedRowIds: {}, selectedRowsOnPage: [], selectedCountOnPage: 0 });
+  };
 
-    setPageIndexState(0);
-  }
+  const exportRows = selectedCount ? selectedRowsOnPage : undefined;
 
-  async function handleRefresh() {
-    resetFiltersAndState();
-    if (!refreshFn) return;
-
-    try {
-      setRefreshing(true);
-      await withBusy(async () => {
-        await refreshFn();
-      });
-      toast.success("Table refreshed");
-    } catch {
-      toast.error("Refresh failed");
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  async function handleMultiDelete() {
-    if (!onDeleteRows || !hasSelection) return;
+  // ✅ IMPORTANT: do NOT confirm/toast/auto-clear here.
+  // Caller decides (your bulk dialog), and selection stays until you clear it.
+  const handleDeleteSelected = async () => {
+    if (!onDeleteRows || !selectedRowsOnPage.length) return;
     await withBusy(async () => {
-      await onDeleteRows(selectedRows.map((r) => r.original as TData));
+      await onDeleteRows(selectedRowsOnPage.map((r) => r.original as TData));
     });
-    table.resetRowSelection();
-  }
+  };
 
   return (
     <div className={cn("w-full space-y-4", className)}>
@@ -933,142 +806,29 @@ export function DataTable<TData, TValue>({
         <div className="flex flex-col gap-4 bg-card p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-1 flex-wrap items-center gap-3">
             {/* Search */}
-            {searchColumnId && (
-              <div className="relative w-full sm:w-[260px]">
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                <Input
-                  placeholder={searchPlaceholder}
-                  value={currentSearchVal ?? ""}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    if (manual) {
-                      setSearchValue(val);
-                      setPageIndexState(0);
-                    } else {
-                      table.getColumn(searchColumnId)?.setFilterValue(val);
-                      table.setPageIndex(0);
-                    }
-                  }}
-                  className="h-9 w-full pl-9"
-                />
-                {currentSearchVal && (
-                  <button
-                    type="button"
-                    className="absolute inset-y-0 right-2 flex items-center text-muted-foreground hover:text-foreground"
-                    onClick={clearSearch}
-                    aria-label="Clear search"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
-            )}
+            <div className="relative w-full sm:w-[260px]">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder={searchPlaceholder}
+                value={searchValue}
+                onChange={(e) => setSearchValue(e.target.value)}
+                className="h-9 w-full pl-9"
+              />
+              {!!searchValue && (
+                <button
+                  type="button"
+                  className="absolute inset-y-0 right-2 flex items-center text-muted-foreground hover:text-foreground"
+                  onClick={() => setSearchValue("")}
+                  aria-label="Clear search"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              )}
+            </div>
 
-            {/* Date (client filters locally, server passes query) */}
-            {!!dateFilterColumnId && (
-              <div className="flex items-center gap-2">
-                <Input
-                  type="date"
-                  className="h-9 w-[130px]"
-                  value={dateFrom}
-                  onChange={(e) => {
-                    setDateFrom(e.target.value);
-                    setPageIndexState(0);
-                  }}
-                />
-                <span className="text-xs text-muted-foreground">-</span>
-                <Input
-                  type="date"
-                  className="h-9 w-[130px]"
-                  value={dateTo}
-                  onChange={(e) => {
-                    setDateTo(e.target.value);
-                    setPageIndexState(0);
-                  }}
-                />
-              </div>
-            )}
+            <Separator orientation="vertical" className="hidden h-6 sm:block" />
 
-            {/* Faceted filters */}
-            {filters?.length ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <Separator orientation="vertical" className="hidden h-6 sm:block" />
-                {filters.map((filter) => {
-                  const col = table.getColumn(filter.columnId);
-                  const current = (col?.getFilterValue() as string) ?? "";
-
-                  return (
-                    <DropdownMenu key={filter.columnId}>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="outline" size="sm" className="h-9 gap-2 rounded-full border-dashed">
-                          <span className="font-normal">{filter.title}</span>
-                          {current && (
-                            <span className="ml-1 rounded-sm bg-primary/10 px-1 py-0.5 text-xs font-normal text-primary">
-                              {filter.options.find((o) => o.value === current)?.label}
-                            </span>
-                          )}
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="start">
-                        <DropdownMenuLabel>{filter.title}</DropdownMenuLabel>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuCheckboxItem
-                          checked={!current}
-                          onCheckedChange={() => {
-                            col?.setFilterValue(undefined);
-                            setPageIndexState(0);
-                          }}
-                        >
-                          All
-                        </DropdownMenuCheckboxItem>
-                        {filter.options.map((opt) => (
-                          <DropdownMenuCheckboxItem
-                            key={opt.value}
-                            checked={current === opt.value}
-                            onCheckedChange={() => {
-                              col?.setFilterValue(opt.value);
-                              setPageIndexState(0);
-                            }}
-                          >
-                            {opt.label}
-                          </DropdownMenuCheckboxItem>
-                        ))}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  );
-                })}
-              </div>
-            ) : null}
-
-            {/* Reset */}
-            {anyFilterOrSearch && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-9 w-9"
-                onClick={resetFiltersAndState}
-                title="Reset filters"
-                aria-label="Reset filters"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            )}
-          </div>
-
-          {/* Right actions */}
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={handleRefresh}
-              title="Refresh"
-              className="h-9 w-9"
-              disabled={refreshing || !refreshFn}
-              aria-label="Refresh table"
-            >
-              <RotateCw className={cn("h-4 w-4", (refreshing || busy) && "animate-spin")} />
-            </Button>
-
+            {/* Columns */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" className="h-9 gap-2">
@@ -1076,65 +836,81 @@ export function DataTable<TData, TValue>({
                   <span className="hidden sm:inline">Columns</span>
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuContent align="start" className="w-52">
                 <DropdownMenuLabel>Toggle columns</DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 {table
                   .getAllLeafColumns()
-                  .filter((column) => column.getCanHide() && !["seq", "select"].includes(column.id))
-                  .map((column) => (
+                  .filter((c) => c.getCanHide() && !["seq", "select"].includes(c.id))
+                  .map((c) => (
                     <DropdownMenuCheckboxItem
-                      key={column.id}
-                      checked={column.getIsVisible()}
-                      onCheckedChange={(value) => column.toggleVisibility(!!value)}
+                      key={c.id}
+                      checked={c.getIsVisible()}
+                      onCheckedChange={(v) => c.toggleVisibility(!!v)}
                       className="capitalize"
                     >
-                      {typeof column.columnDef.header === "string" ? column.columnDef.header : column.id}
+                      {typeof c.columnDef.header === "string" ? c.columnDef.header : c.id}
                     </DropdownMenuCheckboxItem>
                   ))}
               </DropdownMenuContent>
             </DropdownMenu>
+          </div>
+
+          {/* Right actions */}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-9 w-9"
+              onClick={() => onQueryChange({})}
+              disabled={loading || busy}
+              aria-label="Reload"
+              title="Reload"
+            >
+              <RotateCw className={cn("h-4 w-4", (loading || busy) && "animate-spin")} />
+            </Button>
 
             <Button
               variant="outline"
               className="h-9 gap-2"
-              onClick={() => withBusy(() => copyTableToClipboard(table))}
+              onClick={() => withBusy(() => copyTableToClipboard(table, exportRows))}
+              disabled={loading || busy}
             >
               <Copy className="h-4 w-4" />
-              <span className="hidden sm:inline">Copy</span>
+              <span className="hidden sm:inline">{selectedCount ? "Copy Selected" : "Copy"}</span>
             </Button>
 
             <Button
               variant="outline"
               className="h-9 gap-2"
-              onClick={() =>
-                withBusy(() => printTable(table, fileName, undefined, companySettings, brandingSettings))
-              }
+              onClick={() => withBusy(() => printTable(table, title, exportRows, companySettings, brandingSettings))}
+              disabled={loading || busy}
             >
               <Printer className="h-4 w-4" />
-              <span className="hidden sm:inline">Print</span>
+              <span className="hidden sm:inline">{selectedCount ? "Print Selected" : "Print"}</span>
             </Button>
 
+            {/* ✅ Export dropdown includes PDF */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="secondary" className="h-9 gap-2 shadow-sm">
+                <Button variant="secondary" className="h-9 gap-2 shadow-sm" disabled={loading || busy}>
                   <Download className="h-4 w-4" />
-                  <span className="hidden sm:inline">Export</span>
+                  <span className="hidden sm:inline">{selectedCount ? "Export Selected" : "Export"}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => withBusy(() => downloadCsv(table, fileName))}>
-                  CSV
+                <DropdownMenuItem onClick={() => downloadCsv(table, fileName, exportRows)}>
+                  CSV{selectedCount ? " (selected)" : ""}
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => withBusy(() => exportXlsx(table, fileName))}>
-                  XLSX
+                <DropdownMenuItem onClick={() => exportXlsx(table, fileName, exportRows)}>
+                  XLSX{selectedCount ? " (selected)" : ""}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() =>
-                    withBusy(() => exportPdf(table, fileName, undefined, companySettings, brandingSettings))
+                    withBusy(() => exportPdf(table, fileName, exportRows, companySettings, brandingSettings))
                   }
                 >
-                  PDF
+                  PDF{selectedCount ? " (selected)" : ""}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -1143,7 +919,7 @@ export function DataTable<TData, TValue>({
 
         {/* Content */}
         <DataTableCardContent className="relative border-t">
-          {isOverlayActive && (
+          {(loading || busy) && (
             <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/50 backdrop-blur-[1px]">
               <RotateCw className="h-6 w-6 animate-spin text-primary" />
             </div>
@@ -1160,7 +936,8 @@ export function DataTable<TData, TValue>({
                         "h-10 px-4 text-xs font-medium uppercase tracking-wider text-muted-foreground",
                         h.column.getCanSort() && "cursor-pointer select-none hover:text-foreground",
                         (h.column.columnDef.meta as any)?.align === "right" && "text-right",
-                        (h.column.columnDef.meta as any)?.align === "center" && "text-center"
+                        (h.column.columnDef.meta as any)?.align === "center" && "text-center",
+                        h.column.id === "select" && "w-[44px] px-2"
                       )}
                       onClick={h.column.getCanSort() ? h.column.getToggleSortingHandler() : undefined}
                     >
@@ -1168,15 +945,12 @@ export function DataTable<TData, TValue>({
                         className={cn(
                           "flex items-center gap-2",
                           (h.column.columnDef.meta as any)?.align === "right" && "justify-end",
-                          (h.column.columnDef.meta as any)?.align === "center" && "justify-center"
+                          (h.column.columnDef.meta as any)?.align === "center" && "justify-center",
+                          h.column.id === "select" && "justify-center"
                         )}
                       >
                         {h.isPlaceholder ? null : flexRender(h.column.columnDef.header, h.getContext())}
-                        {h.column.getIsSorted() === "asc"
-                          ? " ▲"
-                          : h.column.getIsSorted() === "desc"
-                            ? " ▼"
-                            : null}
+                        {h.column.getIsSorted() === "asc" ? " ▲" : h.column.getIsSorted() === "desc" ? " ▼" : null}
                       </div>
                     </TableHead>
                   ))}
@@ -1185,12 +959,24 @@ export function DataTable<TData, TValue>({
             </TableHeader>
 
             <TableBody>
-              {table.getRowModel().rows.length ? (
+              {loading ? (
+                Array.from({ length: pageSize }).map((_, i) => (
+                  <TableRow key={`sk-${i}`}>
+                    {table.getAllLeafColumns().map((c) => (
+                      <TableCell key={`sk-${i}-${c.id}`} className={cn("px-4 py-3", c.id === "select" && "px-2")}>
+                        <Skeleton className="h-4 w-full" />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : table.getRowModel().rows.length ? (
                 table.getRowModel().rows.map((row) => (
                   <TableRow
                     key={row.id}
-                    data-state={row.getIsSelected() && "selected"}
-                    className="group transition-colors hover:bg-muted/20 data-[state=selected]:bg-muted/50"
+                    className={cn(
+                      "group transition-colors hover:bg-muted/20",
+                      enableRowSelection && row.getIsSelected() && "bg-muted/10"
+                    )}
                   >
                     {row.getVisibleCells().map((cell) => (
                       <TableCell
@@ -1198,7 +984,8 @@ export function DataTable<TData, TValue>({
                         className={cn(
                           "px-4 py-3 align-middle text-sm",
                           (cell.column.columnDef.meta as any)?.align === "right" && "text-right",
-                          (cell.column.columnDef.meta as any)?.align === "center" && "text-center"
+                          (cell.column.columnDef.meta as any)?.align === "center" && "text-center",
+                          cell.column.id === "select" && "px-2"
                         )}
                       >
                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -1208,10 +995,7 @@ export function DataTable<TData, TValue>({
                 ))
               ) : (
                 <TableRow>
-                  <TableCell
-                    colSpan={table.getAllLeafColumns().length || 1}
-                    className="h-32 text-center text-sm text-muted-foreground"
-                  >
+                  <TableCell colSpan={table.getAllLeafColumns().length || 1} className="h-32 text-center text-sm text-muted-foreground">
                     No results found.
                   </TableCell>
                 </TableRow>
@@ -1225,13 +1009,10 @@ export function DataTable<TData, TValue>({
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">Rows</span>
             <select
-              className="h-8 w-16 rounded-md border border-input bg-background px-2 text-xs font-medium"
-              value={pageSizeState}
-              onChange={(e) => {
-                const val = Number(e.target.value);
-                setPageSizeState(val);
-                setPageIndexState(0);
-              }}
+              className="h-9 w-20 rounded-xl border border-input bg-background px-2 text-xs font-medium"
+              value={pageSize}
+              onChange={(e) => sendPageSize(Number(e.target.value))}
+              disabled={loading || busy}
             >
               {pageSizeOptions.map((n) => (
                 <option key={n} value={n}>
@@ -1241,71 +1022,76 @@ export function DataTable<TData, TValue>({
             </select>
 
             <span className="ml-2 hidden text-sm text-muted-foreground sm:inline">
-              Showing <strong>{startEntry}</strong>-<strong>{endEntry}</strong> of <strong>{total}</strong>
+              Total <strong>{totalEntries.toLocaleString()}</strong>
             </span>
+
+            {hasSelection && (
+              <span className="ml-2 hidden text-sm text-muted-foreground sm:inline">
+                Selected (page) <strong>{selectedCount}</strong>
+              </span>
+            )}
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-2">
             <Button
+              type="button"
               variant="outline"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => {
-                setPageIndexState((p) => Math.max(0, p - 1));
-                scrollIntoViewIfNeeded(scrollTo);
-              }}
-              disabled={!canPrev}
+              className={cn("h-12 w-12 rounded-2xl border bg-background/40 p-0", (!canPrev || loading || busy) && "opacity-50")}
+              onClick={() => sendPage(currentPage - 1)}
+              disabled={!canPrev || loading || busy}
               aria-label="Previous page"
             >
-              <ChevronLeft className="h-4 w-4" />
+              <ChevronLeft className="h-5 w-5" />
             </Button>
 
-            {buildPageItems(page + 1, pageCount, 1).map((item, idx) => {
-              if (item === "…") {
+            <div className="flex items-center gap-2">
+              {pageItems.map((item, idx) => {
+                if (item === "…") {
+                  return (
+                    <div key={`dots-${idx}`} className="px-2 text-sm text-muted-foreground">
+                      …
+                    </div>
+                  );
+                }
+
+                const isActive = item === currentPage;
+
                 return (
-                  <span key={`dots-${idx}`} className="px-2 text-xs text-muted-foreground">
-                    ...
-                  </span>
+                  <button
+                    key={item}
+                    type="button"
+                    onClick={() => sendPage(item)}
+                    disabled={loading || busy}
+                    className={cn(
+                      "h-12 w-12 rounded-2xl border text-sm font-semibold transition",
+                      isActive
+                        ? "border-transparent bg-white text-black"
+                        : "border-border/60 bg-background/40 text-foreground hover:bg-background/70",
+                      (loading || busy) && "opacity-60"
+                    )}
+                    aria-current={isActive ? "page" : undefined}
+                  >
+                    {item}
+                  </button>
                 );
-              }
-
-              const pNum = item as number;
-              const isActive = pNum === page + 1;
-
-              return (
-                <Button
-                  key={`p-${pNum}`}
-                  variant={isActive ? "default" : "outline"}
-                  size="sm"
-                  className={cn("h-8 w-8 p-0 text-xs", isActive && "pointer-events-none")}
-                  onClick={() => {
-                    setPageIndexState(pNum - 1);
-                    scrollIntoViewIfNeeded(scrollTo);
-                  }}
-                >
-                  {pNum}
-                </Button>
-              );
-            })}
+              })}
+            </div>
 
             <Button
+              type="button"
               variant="outline"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => {
-                setPageIndexState((p) => Math.min(pageCount - 1, p + 1));
-                scrollIntoViewIfNeeded(scrollTo);
-              }}
-              disabled={!canNext}
+              className={cn("h-12 w-12 rounded-2xl border bg-background/40 p-0", (!canNext || loading || busy) && "opacity-50")}
+              onClick={() => sendPage(currentPage + 1)}
+              disabled={!canNext || loading || busy}
               aria-label="Next page"
             >
-              <ChevronRight className="h-4 w-4" />
+              <ChevronRight className="h-5 w-5" />
             </Button>
           </div>
         </DataTableCardFooter>
       </DataTableCard>
 
-      {/* Floating selection bar */}
+      {/* ✅ Floating selection bar (Copy / Export / Print / Delete / Clear) */}
       {hasSelection && (
         <div className="fixed bottom-8 left-1/2 z-50 -translate-x-1/2 animate-in slide-in-from-bottom-5 fade-in duration-300">
           <div className="flex items-center gap-2 rounded-full border border-zinc-200 bg-zinc-900 p-2 pl-4 text-zinc-50 shadow-2xl dark:border-zinc-700 dark:bg-zinc-100 dark:text-zinc-900">
@@ -1321,7 +1107,8 @@ export function DataTable<TData, TValue>({
                 size="sm"
                 variant="ghost"
                 className="h-8 rounded-full px-3 text-white hover:bg-white/20 dark:text-black dark:hover:bg-black/10"
-                onClick={() => withBusy(() => copyTableToClipboard(table, selectedRows))}
+                onClick={() => withBusy(() => copyTableToClipboard(table, selectedRowsOnPage))}
+                disabled={loading || busy}
               >
                 <Copy className="mr-2 h-3.5 w-3.5" />
                 Copy
@@ -1333,21 +1120,20 @@ export function DataTable<TData, TValue>({
                     size="sm"
                     variant="ghost"
                     className="h-8 rounded-full px-3 text-white hover:bg-white/20 dark:text-black dark:hover:bg-black/10"
+                    disabled={loading || busy}
                   >
                     <Download className="mr-2 h-3.5 w-3.5" />
                     Export
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="center">
-                  <DropdownMenuItem onClick={() => withBusy(() => downloadCsv(table, fileName, selectedRows))}>
-                    CSV
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => withBusy(() => exportXlsx(table, fileName, selectedRows))}>
-                    XLSX
-                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => downloadCsv(table, fileName, selectedRowsOnPage)}>CSV</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => exportXlsx(table, fileName, selectedRowsOnPage)}>XLSX</DropdownMenuItem>
                   <DropdownMenuItem
                     onClick={() =>
-                      withBusy(() => exportPdf(table, fileName, selectedRows, companySettings, brandingSettings))
+                      withBusy(() =>
+                        exportPdf(table, fileName, selectedRowsOnPage, companySettings, brandingSettings)
+                      )
                     }
                   >
                     PDF
@@ -1359,9 +1145,8 @@ export function DataTable<TData, TValue>({
                 size="sm"
                 variant="ghost"
                 className="h-8 rounded-full px-3 text-white hover:bg-white/20 dark:text-black dark:hover:bg-black/10"
-                onClick={() =>
-                  withBusy(() => printTable(table, fileName, selectedRows, companySettings, brandingSettings))
-                }
+                onClick={() => withBusy(() => printTable(table, title, selectedRowsOnPage, companySettings, brandingSettings))}
+                disabled={loading || busy}
               >
                 <Printer className="mr-2 h-3.5 w-3.5" />
                 Print
@@ -1372,10 +1157,10 @@ export function DataTable<TData, TValue>({
                   size="sm"
                   variant="ghost"
                   className="h-8 rounded-full px-3 text-red-400 hover:bg-red-900/30 hover:text-red-300"
-                  onClick={handleMultiDelete}
-                  disabled={busy}
+                  onClick={handleDeleteSelected}
+                  disabled={loading || busy}
                 >
-                  <X className="mr-2 h-3.5 w-3.5" />
+                  <Trash2 className="mr-2 h-3.5 w-3.5" />
                   Delete
                 </Button>
               )}
@@ -1385,8 +1170,10 @@ export function DataTable<TData, TValue>({
               size="icon"
               variant="ghost"
               className="h-8 w-8 rounded-full text-zinc-400 hover:bg-white/20 hover:text-white dark:hover:bg-black/10 dark:hover:text-black"
-              onClick={() => table.resetRowSelection()}
+              onClick={clearSelection}
+              disabled={loading || busy}
               aria-label="Clear selection"
+              title="Clear selection"
             >
               <X className="h-4 w-4" />
             </Button>

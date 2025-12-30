@@ -1,18 +1,31 @@
+// lib/prisma.ts
+
 import { Pool, types } from "pg";
 
 import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 
-// Postgres int8 (OID 20) -> BigInt (safe)
-types.setTypeParser(20, (val) => BigInt(val));
+/**
+ * IMPORTANT:
+ * Prisma expects counts/aggregates as JS numbers.
+ * If you parse int8 into BigInt globally, Prisma will crash on _count fields.
+ *
+ * So for OID 20 (int8), parse to Number.
+ * (Counts are small; this is safe for app usage.)
+ */
+types.setTypeParser(20, (val) => Number(val));
 
 declare global {
+  // eslint-disable-next-line no-var
   var __prisma: PrismaClient | undefined;
+  // eslint-disable-next-line no-var
   var __pgPool: Pool | undefined;
 }
 
 function getDatabaseUrl(): string {
-  return process.env.DATABASE_URL || "";
+  const url = process.env.DATABASE_URL;
+  if (!url) throw new Error("DATABASE_URL is missing");
+  return url;
 }
 
 function getOrCreatePgPool(): Pool {
@@ -28,8 +41,7 @@ function getOrCreatePgPool(): Pool {
     allowExitOnIdle: process.env.NODE_ENV !== "production",
   });
 
-  // Silent error handling to prevent terminal noise
-  pool.on("error", () => {}); 
+  pool.on("error", () => {});
 
   if (process.env.NODE_ENV !== "production") {
     globalThis.__pgPool = pool;
@@ -46,15 +58,11 @@ function getOrCreatePrismaClient(): PrismaClient {
   const pool = getOrCreatePgPool();
   const adapter = new PrismaPg(pool);
 
-  // Determine log levels: only "query" if explicitly enabled in .env
   const isLogging = process.env.PRISMA_LOG_QUERIES === "true";
-  const logConfig: any[] = ["error"]; 
-  if (isLogging) logConfig.push("query");
+  const log: any[] = ["error"];
+  if (isLogging) log.push("query");
 
-  const client = new PrismaClient({
-    adapter,
-    log: logConfig,
-  });
+  const client = new PrismaClient({ adapter, log });
 
   if (process.env.NODE_ENV !== "production") {
     globalThis.__prisma = client;
@@ -63,17 +71,13 @@ function getOrCreatePrismaClient(): PrismaClient {
   return client;
 }
 
-export const prisma: PrismaClient = getOrCreatePrismaClient();
+export const prisma = getOrCreatePrismaClient();
 
 export async function closePrisma(): Promise<void> {
-  try {
-    await prisma.$disconnect();
-    if (globalThis.__pgPool) {
-      await globalThis.__pgPool.end();
-      globalThis.__pgPool = undefined;
-    }
-    globalThis.__prisma = undefined;
-  } catch {
-    // Silent catch
+  await prisma.$disconnect().catch(() => {});
+  if (globalThis.__pgPool) {
+    await globalThis.__pgPool.end().catch(() => {});
+    globalThis.__pgPool = undefined;
   }
+  globalThis.__prisma = undefined;
 }

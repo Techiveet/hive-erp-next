@@ -1,13 +1,25 @@
+// app/(dashboard)/security/permissions/permissions-actions.ts
 "use server";
 
 import { getCurrentSession } from "@/lib/auth-server";
 import { getCurrentUserPermissions } from "@/lib/rbac";
-import { permissionSchema } from "@/lib/validations/security";
 import { prisma } from "@/lib/prisma";
 
-const RESTRICTED_KEYS = ["manage_tenants", "manage_billing", "root"];
+/** Match your server policy */
+const SYSTEM_PERMISSION_KEYS = new Set([
+  "manage_tenants",
+  "manage_billing",
+  "manage_security",
+  "manage_roles",
+  "view_security",
+  "root",
+]);
 
-async function assertCanManagePermissions(required: string[]) {
+function isSystemPermissionKey(key: string) {
+  return key.startsWith("sys_") || SYSTEM_PERMISSION_KEYS.has(key);
+}
+
+async function assertCan(required: string[]) {
   const { user } = await getCurrentSession();
   if (!user?.id) throw new Error("UNAUTHORIZED");
 
@@ -24,25 +36,88 @@ async function assertCanManagePermissions(required: string[]) {
   if (!ok) throw new Error("FORBIDDEN_INSUFFICIENT_PERMISSIONS");
 }
 
+export type PermissionsQuery = {
+  page: number;
+  pageSize: number;
+  sortCol?: "name" | "key";
+  sortDir?: "asc" | "desc";
+  search?: string;
+};
+
+export type PermissionForClient = {
+  id: string;
+  name: string;
+  key: string;
+  isGlobal: boolean; // derived
+};
+
+export async function fetchPermissionsTabAction(q: Partial<PermissionsQuery>) {
+  await assertCan(["permissions.view"]);
+
+  const page = Math.max(1, Number(q.page ?? 1));
+  const pageSize = Math.min(50, Math.max(5, Number(q.pageSize ?? 10)));
+  const skip = (page - 1) * pageSize;
+
+const sortCol: "name" | "key" = q.sortCol === "key" ? "key" : "name";
+const sortDir: "asc" | "desc" = q.sortDir === "desc" ? "desc" : "asc";
+
+  const search = (q.search ?? "").trim();
+
+  const where =
+    search.length > 0
+      ? {
+          OR: [
+            { name: { contains: search, mode: "insensitive" as const } },
+            { key: { contains: search, mode: "insensitive" as const } },
+          ],
+        }
+      : {};
+
+  const [totalEntries, items] = await Promise.all([
+    prisma.permission.count({ where }),
+    prisma.permission.findMany({
+      where,
+      orderBy: { [sortCol]: sortDir },
+      skip,
+      take: pageSize,
+      select: {
+        id: true,
+        name: true,
+        key: true,
+      },
+    }),
+  ]);
+
+  const permissions: PermissionForClient[] = items.map((p) => ({
+    ...p,
+    isGlobal: isSystemPermissionKey(p.key),
+  }));
+
+  return { ok: true as const, totalEntries, permissions };
+}
+
+/**
+ * ✅ Create/Update
+ * - Blocks reserved/system keys
+ */
 export async function upsertPermissionAction(rawData: unknown) {
-  const result = permissionSchema.safeParse(rawData);
-  if (!result.success) throw new Error(result.error.issues[0].message);
+  const input = rawData as { id?: string | null; name: string; key: string };
 
-  const input = result.data;
+  await assertCan([input.id ? "permissions.update" : "permissions.create"]);
 
-  await assertCanManagePermissions(
-    input.id ? ["permissions.update"] : ["permissions.create"]
-  );
+  const key = (input.key ?? "").trim();
+  const name = (input.name ?? "").trim();
 
-  // reserved keys
-  if (RESTRICTED_KEYS.includes(input.key) || input.key.startsWith("sys_")) {
+  if (!key || !name) throw new Error("Invalid input");
+
+  // ✅ reserved keys
+  if (isSystemPermissionKey(key)) {
     throw new Error("KEY_RESERVED_FOR_SYSTEM");
   }
 
-  // uniqueness (global)
   const existing = await prisma.permission.findFirst({
     where: {
-      key: input.key,
+      key,
       ...(input.id ? { id: { not: input.id } } : {}),
     },
     select: { id: true },
@@ -53,35 +128,91 @@ export async function upsertPermissionAction(rawData: unknown) {
   if (input.id) {
     await prisma.permission.update({
       where: { id: input.id },
-      data: { name: input.name, key: input.key },
+      data: { name, key },
     });
-  } else {
-    await prisma.permission.create({
-      data: { name: input.name, key: input.key },
-    });
+
+    return { ok: true, mode: "updated" as const };
   }
 
-  return { ok: true };
+  await prisma.permission.create({
+    data: { name, key },
+  });
+
+  return { ok: true, mode: "created" as const };
 }
 
-export async function deletePermissionAction(id: string) {
-  await assertCanManagePermissions(["permissions.delete"]);
+/**
+ * ✅ Single OR Bulk delete
+ * - Accepts: string | string[]
+ * - Blocks delete if permission is in use by any role
+ * - Blocks delete if it's system/global (derived)
+ */
+export async function deletePermissionAction(idOrIds: string | string[]) {
+  await assertCan(["permissions.delete"]);
 
-  const perm = await prisma.permission.findUnique({
-    where: { id },
-    select: { id: true, name: true },
+  const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds];
+  const uniqueIds = Array.from(new Set(ids)).filter(Boolean);
+
+  if (uniqueIds.length === 0) return { ok: true, deleted: 0, blocked: 0, deletedIds: [] as string[] };
+
+  // load keys to detect system perms
+  const perms = await prisma.permission.findMany({
+    where: { id: { in: uniqueIds } },
+    select: { id: true, key: true },
   });
 
-  if (!perm) throw new Error("NOT_FOUND");
+  const keyById = new Map(perms.map((p) => [p.id, p.key]));
 
-  // ✅ Avoid COUNT() to dodge BIGINT count issues
-  const inUse = await prisma.rolePermission.findFirst({
-    where: { permissionId: id },
-    select: { roleId: true },
-  });
+  // single delete: throw like before
+  if (!Array.isArray(idOrIds)) {
+    const id = uniqueIds[0];
+    const key = keyById.get(id);
 
-  if (inUse) throw new Error("PERMISSION_IN_USE");
+    if (!key) throw new Error("NOT_FOUND");
+    if (isSystemPermissionKey(key)) throw new Error("CANNOT_DELETE_SYSTEM_PERMISSION");
 
-  await prisma.permission.delete({ where: { id } });
-  return { ok: true };
+    const inUse = await prisma.rolePermission.findFirst({
+      where: { permissionId: id },
+      select: { roleId: true },
+    });
+
+    if (inUse) throw new Error("PERMISSION_IN_USE");
+
+    await prisma.permission.delete({ where: { id } });
+    return { ok: true, deleted: 1, blocked: 0, deletedIds: [id] };
+  }
+
+  // bulk delete: best-effort
+  let deleted = 0;
+  let blocked = 0;
+  const deletedIds: string[] = [];
+
+  for (const id of uniqueIds) {
+    const key = keyById.get(id);
+    if (!key) {
+      blocked++;
+      continue;
+    }
+
+    if (isSystemPermissionKey(key)) {
+      blocked++;
+      continue;
+    }
+
+    const inUse = await prisma.rolePermission.findFirst({
+      where: { permissionId: id },
+      select: { roleId: true },
+    });
+
+    if (inUse) {
+      blocked++;
+      continue;
+    }
+
+    await prisma.permission.delete({ where: { id } });
+    deleted++;
+    deletedIds.push(id);
+  }
+
+  return { ok: true, deleted, blocked, deletedIds };
 }

@@ -20,7 +20,7 @@ export type NavItem = {
 export const DASHBOARD_NAV: NavItem[] = [
   { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
   { label: "Tenants", href: "/dashboard/tenants", icon: Building2 },
-  { label: "Users", href: "/dashboard/users", icon: Users },
+  { label: "Security", href: "/security", icon: Users },
   { label: "Modules", href: "/dashboard/modules", icon: Boxes },
   { label: "Reports", href: "/dashboard/reports", icon: BarChart3 },
   { label: "Audit Logs", href: "/dashboard/audit", icon: FileText },

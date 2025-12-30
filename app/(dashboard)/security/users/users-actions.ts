@@ -1,12 +1,14 @@
+// app/(dashboard)/security/users/users-actions.ts
 "use server";
 
 import React from "react";
 import crypto from "crypto";
 import { hash } from "bcryptjs";
-import { headers } from "next/headers";
-import { MembershipStatus } from "@prisma/client";
+import { headers as nextHeaders } from "next/headers";
 
 import { prisma } from "@/lib/prisma";
+import { Prisma, MembershipStatus, RoleScope } from "@prisma/client";
+
 import { auth } from "@/lib/auth";
 import { sendEmail } from "@/lib/send-email";
 import { userSchema } from "@/lib/validations/security";
@@ -20,103 +22,168 @@ import {
   type UserStatus,
 } from "@/emails/user-account-template";
 
-/* ------------------------------------------------------------------
- * Tenant helpers
- * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Types */
+/* ------------------------------------------------------------------ */
 
-async function getTenantMeta(tenantId?: string | null) {
-  const fallbackLogin =
-    process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || "http://localhost:3000";
+export type UsersTabQuery = {
+  tenantId?: string | null; // if CENTRAL: optional browse-tenantId
+  page?: number;
+  pageSize?: number;
+  sortCol?: "name" | "email" | "createdAt" | "isActive";
+  sortDir?: "asc" | "desc";
+  search?: string;
+};
 
-  if (!tenantId) {
-    return {
-      tenantName: undefined as string | undefined,
-      tenantDomain: undefined as string | undefined,
-      loginUrl: fallbackLogin,
-    };
-  }
+export type RoleLite = {
+  id: string;
+  key: string;
+  name: string;
+  scope: "CENTRAL" | "TENANT";
+};
 
-  const tenant = await prisma.tenant.findUnique({
+export type UserForClient = {
+  id: string;
+  name: string | null;
+  email: string;
+  createdAt: string;
+  isActive: boolean;
+  avatarUrl?: string | null;
+  userRoles: {
+    id: string; // membership id
+    roleId: string | null;
+    role: { key: string; name: string; scope?: "CENTRAL" | "TENANT" };
+    tenantId: string; // ✅ membership tenantId MUST be string
+  }[];
+};
+
+export type UsersTabPayload = {
+  users: UserForClient[];
+  totalEntries: number;
+  assignableRoles: RoleLite[];
+  currentUserId: string;
+
+  contextScope: "CENTRAL" | "TENANT";
+
+  // ✅ CENTRAL => null (UI), TENANT => tenantId
+  tenantId: string | null;
+  tenantName: string | null;
+
+  companySettings: any | null;
+  brandingSettings: any | null;
+};
+
+/* ------------------------------------------------------------------ */
+/* Helpers */
+/* ------------------------------------------------------------------ */
+
+async function getSafeRequestHeaders(): Promise<Headers> {
+  const h = await nextHeaders();
+  const safe = new Headers();
+  h.forEach((value, key) => safe.set(key, value));
+  return safe;
+}
+
+async function getCentralTenant(): Promise<{ id: string; name: string }> {
+  const central = await prisma.tenant.findUnique({
+    where: { slug: "central-hive" },
+    select: { id: true, name: true },
+  });
+  if (!central) throw new Error("CENTRAL_TENANT_NOT_FOUND");
+  return central;
+}
+
+async function getTenantNameById(tenantId: string): Promise<string | null> {
+  const t = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    include: { domains: true },
+    select: { name: true },
+  });
+  return t?.name ?? null;
+}
+
+/**
+ * ✅ Decide actor context from active membership.role.scope
+ * If no membership, default CENTRAL.
+ */
+async function getActorContext(actorId: string): Promise<{
+  scope: RoleScope;
+  tenantId: string | null;
+}> {
+  const m = await prisma.membership.findFirst({
+    where: { userId: actorId, status: MembershipStatus.ACTIVE },
+    select: { tenantId: true, role: { select: { scope: true } } },
+    orderBy: { createdAt: "desc" },
   });
 
-  if (!tenant) {
-    return {
-      tenantName: undefined,
-      tenantDomain: undefined,
-      loginUrl: fallbackLogin,
-    };
-  }
-
-  const primaryDomain = tenant.domains?.[0]?.domain?.trim() || undefined;
-
-  const loginUrl = primaryDomain
-    ? primaryDomain.startsWith("http")
-      ? primaryDomain
-      : `https://${primaryDomain}`
-    : fallbackLogin;
-
   return {
-    tenantName: tenant.name,
-    tenantDomain: primaryDomain,
-    loginUrl,
+    scope: m?.role?.scope ?? RoleScope.CENTRAL,
+    tenantId: m?.tenantId ?? null,
   };
 }
 
-async function getCentralTenantId(): Promise<string> {
-  const central = await prisma.tenant.findUnique({
-    where: { slug: "central-hive" },
-    select: { id: true },
-  });
-
-  if (!central) throw new Error("CENTRAL_TENANT_NOT_FOUND");
-  return central.id;
-}
-
-/* ------------------------------------------------------------------
- * Auth + permission helper
- * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Authorization */
+/* ------------------------------------------------------------------ */
 
 async function authorizeUserAction(
-  tenantId: string | null | undefined,
   requiredPermissions: string[]
-) {
+): Promise<{
+  actorId: string;
+  centralTenantId: string;
+  actorScope: RoleScope;
+  actorTenantId: string | null;
+  hasCentralOverride: boolean;
+}> {
   const { user } = await getCurrentSession();
   if (!user?.id) throw new Error("UNAUTHORIZED");
 
-  // tenant membership check (if tenant context)
-  if (tenantId) {
-    const membership = await prisma.membership.findUnique({
-      where: { tenantId_userId: { tenantId, userId: user.id } },
-    });
+  const central = await getCentralTenant();
 
-    if (!membership || membership.status !== MembershipStatus.ACTIVE) {
-      throw new Error("FORBIDDEN_INSUFFICIENT_PERMISSIONS");
-    }
-  }
-
-  const perms = await getCurrentUserPermissions(tenantId ?? null);
-
-  const hasRequired = requiredPermissions.some(
-    (key) =>
-      perms.includes(key) ||
-      perms.includes("manage_users") ||
-      perms.includes("manage_security")
+  // central override perms
+  const centralPerms = await getCurrentUserPermissions(central.id);
+  const hasCentralOverride = requiredPermissions.some(
+    (k) =>
+      centralPerms.includes(k) ||
+      centralPerms.includes("manage_users") ||
+      centralPerms.includes("manage_security") ||
+      centralPerms.includes("manage_roles")
   );
 
-  if (!hasRequired) throw new Error("FORBIDDEN_INSUFFICIENT_PERMISSIONS");
+  const ctx = await getActorContext(user.id);
 
-  return { actorId: user.id };
+  if (!hasCentralOverride) {
+    const permsTenantId = ctx.scope === RoleScope.CENTRAL ? central.id : ctx.tenantId;
+    if (!permsTenantId) throw new Error("FORBIDDEN_NO_ACTIVE_TENANT");
+
+    const perms = await getCurrentUserPermissions(permsTenantId);
+
+    const ok = requiredPermissions.some(
+      (k) =>
+        perms.includes(k) ||
+        perms.includes("manage_users") ||
+        perms.includes("manage_security") ||
+        perms.includes("manage_roles")
+    );
+
+    if (!ok) throw new Error("FORBIDDEN_INSUFFICIENT_PERMISSIONS");
+  }
+
+  return {
+    actorId: user.id,
+    centralTenantId: central.id,
+    actorScope: ctx.scope,
+    actorTenantId: ctx.tenantId,
+    hasCentralOverride,
+  };
 }
 
-/* ------------------------------------------------------------------
- * Password setup token helpers
- * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Password Helpers */
+/* ------------------------------------------------------------------ */
 
 function generatePasswordSetupToken() {
   const token = crypto.randomBytes(32).toString("hex");
-  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24); // 24h
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24);
   return { token, expiresAt };
 }
 
@@ -124,7 +191,6 @@ async function issuePasswordSetupToken(userId: string) {
   const { token, expiresAt } = generatePasswordSetupToken();
 
   await prisma.passwordSetupToken.deleteMany({ where: { userId } });
-
   await prisma.passwordSetupToken.create({
     data: { userId, token, expiresAt },
   });
@@ -132,16 +198,9 @@ async function issuePasswordSetupToken(userId: string) {
   return { token, expiresAt };
 }
 
-/* ------------------------------------------------------------------
- * Shared password-change helper (BetterAuth accounts table)
- * ------------------------------------------------------------------ */
-
 export async function changeUserPasswordInternal(userId: string, newPassword: string) {
   const hashedPassword = await hash(newPassword, 10);
-
-  const account = await prisma.account.findFirst({
-    where: { userId },
-  });
+  const account = await prisma.account.findFirst({ where: { userId } });
 
   if (account) {
     await prisma.account.update({
@@ -163,90 +222,63 @@ export async function changeUserPasswordInternal(userId: string, newPassword: st
   });
 }
 
-/* ------------------------------------------------------------------
- * CREATE / UPDATE USER
- * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* CREATE / UPDATE USER */
+/* ------------------------------------------------------------------ */
 
 export async function createOrUpdateUserAction(rawData: unknown) {
   const parsed = userSchema.safeParse(rawData);
-  if (!parsed.success) {
-    throw new Error(parsed.error.issues[0]?.message ?? "INVALID_INPUT");
-  }
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "INVALID_INPUT");
 
   const input = parsed.data;
 
-  await authorizeUserAction(
-    input.tenantId ?? null,
-    input.id ? ["users.update"] : ["users.create"]
-  );
+  const authz = await authorizeUserAction(input.id ? ["users.update"] : ["users.create"]);
+  const central = await getCentralTenant();
 
-  const role = await prisma.role.findUnique({ where: { id: input.roleId } });
+  // ✅ Data partition (memberships always have tenantId)
+  const dataTenantId =
+    authz.actorScope === RoleScope.CENTRAL ? central.id : (authz.actorTenantId as string);
+
+  const role = await prisma.role.findUnique({
+    where: { id: input.roleId },
+    select: { id: true, name: true, key: true, tenantId: true, scope: true },
+  });
   if (!role) throw new Error("ROLE_NOT_FOUND");
 
-  // Role scope checks
-  if (input.tenantId && role.tenantId !== input.tenantId) {
-    throw new Error("ROLE_TENANT_MISMATCH");
+  // ✅ Validate role assignment
+  if (authz.actorScope === RoleScope.CENTRAL) {
+    if (role.scope !== RoleScope.CENTRAL) throw new Error("ROLE_SCOPE_MISMATCH");
+  } else {
+    if (role.scope !== RoleScope.TENANT) throw new Error("ROLE_SCOPE_MISMATCH");
+    if (role.tenantId !== dataTenantId) throw new Error("ROLE_TENANT_MISMATCH");
   }
-  if (!input.tenantId && role.tenantId !== null) {
-    throw new Error("ROLE_SCOPE_MISMATCH");
-  }
-
-  // Uniqueness rules for special roles
-  if (role.key === "central_superadmin" && role.tenantId === null) {
-    const existingHolder = await prisma.membership.findFirst({
-      where: {
-        roleId: role.id,
-        ...(input.id ? { userId: { not: input.id } } : {}),
-        status: MembershipStatus.ACTIVE,
-      },
-    });
-    if (existingHolder) throw new Error("CENTRAL_SUPERADMIN_ALREADY_ASSIGNED");
-  }
-
-  if (role.key === "tenant_superadmin" && role.tenantId) {
-    const existingTenantSuper = await prisma.membership.findFirst({
-      where: {
-        roleId: role.id,
-        tenantId: role.tenantId,
-        ...(input.id ? { userId: { not: input.id } } : {}),
-        status: MembershipStatus.ACTIVE,
-      },
-    });
-    if (existingTenantSuper) throw new Error("TENANT_SUPERADMIN_ALREADY_ASSIGNED");
-  }
-
-  const { tenantName, tenantDomain, loginUrl } = await getTenantMeta(input.tenantId);
 
   const plainPassword = (input.password ?? "").trim();
   const normalizedEmail = input.email.toLowerCase().trim();
 
-  let user: { id: string; name: string | null; email: string; isActive: boolean | null } | null =
-    null;
+  let user: { id: string; name: string | null; email: string; isActive: boolean | null } | null = null;
 
   let changedName = false;
   let changedPassword = false;
   let changedRole = false;
-
   let passwordSetupUrl: string | undefined;
 
-  // determine tenant context for membership upsert
-  const effectiveTenantId = input.tenantId ?? (await getCentralTenantId());
+  const tenantName =
+    authz.actorScope === RoleScope.CENTRAL ? central.name : await getTenantNameById(dataTenantId);
+
+  const loginBase = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
   if (input.id) {
     const existing = await prisma.user.findUnique({
       where: { id: input.id },
-      include: {
-        memberships: true,
-      },
+      include: { memberships: true },
     });
     if (!existing) throw new Error("USER_NOT_FOUND");
 
     changedName = (existing.name ?? "") !== (input.name ?? "");
 
-    const existingMembershipForContext = existing.memberships.find(
-      (m) => m.tenantId === effectiveTenantId
-    );
-    changedRole = existingMembershipForContext?.roleId !== input.roleId;
+    const existingMembership = existing.memberships.find((m) => m.tenantId === dataTenantId);
+    changedRole = existingMembership?.roleId !== input.roleId;
 
     user = await prisma.user.update({
       where: { id: existing.id },
@@ -277,7 +309,7 @@ export async function createOrUpdateUserAction(rawData: unknown) {
         name: input.name,
       },
       asResponse: false,
-      headers: await headers(),
+      headers: await getSafeRequestHeaders(),
     });
 
     if (!signUpResult?.user) throw new Error("FAILED_TO_CREATE_USER_AUTH");
@@ -297,180 +329,89 @@ export async function createOrUpdateUserAction(rawData: unknown) {
 
     changedPassword = true;
 
-    // Create setup-password token (better than sending temp password)
     const { token } = await issuePasswordSetupToken(user.id);
-
-    const base =
-      loginUrl ||
-      process.env.NEXT_PUBLIC_APP_URL ||
-      process.env.APP_URL ||
-      "http://localhost:3000";
-
-    passwordSetupUrl = `${base.replace(/\/+$/, "")}/setup-password?token=${encodeURIComponent(
-      token
-    )}`;
+    const base = loginBase.replace(/\/+$/, "");
+    passwordSetupUrl = `${base}/setup-password?token=${encodeURIComponent(token)}`;
   }
 
   if (!user) throw new Error("FAILED_TO_SAVE_USER");
 
-  // Membership upsert
+  // ✅ Membership tenantId MUST be string
   await prisma.membership.upsert({
-    where: {
-      tenantId_userId: { tenantId: effectiveTenantId, userId: user.id },
-    },
+    where: { tenantId_userId: { tenantId: dataTenantId, userId: user.id } },
     update: { roleId: input.roleId, status: MembershipStatus.ACTIVE },
     create: {
-      tenantId: effectiveTenantId,
+      tenantId: dataTenantId,
       userId: user.id,
       roleId: input.roleId,
       status: MembershipStatus.ACTIVE,
     },
   });
 
-  // Email: created vs updated
   const status: UserStatus = user.isActive ? "ACTIVE" : "INACTIVE";
   const kind: UserAccountKind = input.id ? "updated" : "created";
 
   await sendEmail({
     to: user.email,
-    subject: getUserAccountSubject(kind, tenantName),
+    subject: getUserAccountSubject(kind, tenantName ?? undefined),
     react: React.createElement(UserAccountEmail, {
       kind,
       name: user.name || user.email,
       email: user.email,
       status,
       roleName: role.name,
-      // do NOT send password; use setup link
       password: undefined,
-
       changedName: kind === "updated" ? changedName : undefined,
       changedPassword: kind === "updated" ? changedPassword : undefined,
       changedRole: kind === "updated" ? changedRole : undefined,
-
-      tenantName,
-      tenantDomain,
-      loginUrl: passwordSetupUrl ?? loginUrl,
+      tenantName: tenantName ?? undefined,
+      tenantDomain: undefined,
+      loginUrl: passwordSetupUrl ?? loginBase,
     }),
   });
 
   return { ok: true, userId: user.id };
 }
 
-/* ------------------------------------------------------------------
- * DELETE USER
- * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* DELETE USER */
+/* ------------------------------------------------------------------ */
 
-export async function deleteUserAction(input: { userId: string; tenantId?: string | null }) {
-  const tenantId = input.tenantId ?? null;
-  const { actorId } = await authorizeUserAction(tenantId, ["users.delete"]);
+export async function deleteUserAction(input: { userId: string }) {
+  const authz = await authorizeUserAction(["users.delete"]);
+  const central = await getCentralTenant();
 
-  if (input.userId === actorId) throw new Error("CANNOT_DELETE_SELF");
+  if (input.userId === authz.actorId) throw new Error("CANNOT_DELETE_SELF");
 
-  const centralTenantId = await getCentralTenantId();
-
-  // CENTRAL: delete user record entirely
-  if (!tenantId) {
-    const centralRole = await prisma.role.findFirst({
-      where: { key: "central_superadmin", tenantId: null },
-      select: { id: true },
-    });
-
-    if (centralRole) {
-      const isTargetCentralSuper = await prisma.membership.findFirst({
-        where: {
-          userId: input.userId,
-          roleId: centralRole.id,
-          tenantId: centralTenantId,
-          status: MembershipStatus.ACTIVE,
-        },
-        select: { id: true },
-      });
-
-      if (isTargetCentralSuper) {
-        const count = await prisma.membership.count({
-          where: {
-            roleId: centralRole.id,
-            tenantId: centralTenantId,
-            status: MembershipStatus.ACTIVE,
-          },
-        });
-        if (count <= 1) throw new Error("CANNOT_DELETE_LAST_USER");
-      }
-    }
-
+  if (authz.actorScope === RoleScope.CENTRAL) {
     await prisma.user.delete({ where: { id: input.userId } });
     return { ok: true };
   }
 
-  // TENANT: remove membership (and delete user if no memberships left)
-  const tenantUsersCount = await prisma.membership.count({
-    where: { tenantId, status: MembershipStatus.ACTIVE },
-  });
-  if (tenantUsersCount <= 1) throw new Error("CANNOT_DELETE_LAST_USER");
-
+  const dataTenantId = authz.actorTenantId!;
   await prisma.membership.delete({
-    where: { tenantId_userId: { userId: input.userId, tenantId } },
+    where: { tenantId_userId: { userId: input.userId, tenantId: dataTenantId } },
   });
 
-  const remainingMemberships = await prisma.membership.count({
+  const remaining = await prisma.membership.count({
     where: { userId: input.userId, status: MembershipStatus.ACTIVE },
   });
 
-  if (remainingMemberships === 0) {
+  if (remaining === 0) {
     await prisma.user.delete({ where: { id: input.userId } });
   }
 
   return { ok: true };
 }
 
-/* ------------------------------------------------------------------
- * TOGGLE ACTIVE
- * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* TOGGLE ACTIVE */
+/* ------------------------------------------------------------------ */
 
-export async function toggleUserActiveAction(input: {
-  userId: string;
-  newActive: boolean;
-  tenantId?: string | null;
-}) {
-  const tenantId = input.tenantId ?? null;
-  const { actorId } = await authorizeUserAction(tenantId, ["users.update"]);
-
-  if (input.userId === actorId && !input.newActive) {
+export async function toggleUserActiveAction(input: { userId: string; newActive: boolean }) {
+  const authz = await authorizeUserAction(["users.update"]);
+  if (input.userId === authz.actorId && !input.newActive) {
     throw new Error("CANNOT_DEACTIVATE_SELF");
-  }
-
-  const centralTenantId = await getCentralTenantId();
-
-  // if deactivating, ensure not last superadmin
-  if (!input.newActive) {
-    const memberships = await prisma.membership.findMany({
-      where: { userId: input.userId },
-      include: { role: true },
-    });
-
-    for (const m of memberships) {
-      if (m.role?.key === "central_superadmin") {
-        const count = await prisma.membership.count({
-          where: {
-            roleId: m.roleId ?? undefined,
-            tenantId: centralTenantId,
-            status: MembershipStatus.ACTIVE,
-          },
-        });
-        if (count <= 1) throw new Error("CANNOT_DEACTIVATE_LAST_USER");
-      }
-
-      if (m.role?.key === "tenant_superadmin" && m.tenantId) {
-        const count = await prisma.membership.count({
-          where: {
-            roleId: m.roleId ?? undefined,
-            tenantId: m.tenantId,
-            status: MembershipStatus.ACTIVE,
-          },
-        });
-        if (count <= 1) throw new Error("CANNOT_DEACTIVATE_LAST_USER");
-      }
-    }
   }
 
   const user = await prisma.user.update({
@@ -482,130 +423,173 @@ export async function toggleUserActiveAction(input: {
   const status: UserStatus = input.newActive ? "ACTIVE" : "INACTIVE";
   const kind: UserAccountKind = input.newActive ? "updated" : "deactivated";
 
-  const { tenantName, tenantDomain, loginUrl } = await getTenantMeta(tenantId);
+  const central = await getCentralTenant();
+  const tenantName =
+    authz.actorScope === RoleScope.CENTRAL
+      ? central.name
+      : (await getTenantNameById(authz.actorTenantId!)) ?? undefined;
 
   await sendEmail({
     to: user.email,
-    subject: getUserAccountSubject(kind, tenantName),
+    subject: getUserAccountSubject(kind, tenantName ?? undefined),
     react: React.createElement(UserAccountEmail, {
       kind,
       name: user.name || user.email,
       email: user.email,
       status,
-      tenantName,
-      tenantDomain,
-      loginUrl,
+      tenantName: tenantName ?? undefined,
+      tenantDomain: undefined,
+      loginUrl: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
     }),
   });
 
   return { ok: true, userId: user.id, isActive: user.isActive };
 }
 
-/* ------------------------------------------------------------------
- * BOOTSTRAP USERS TAB
- * ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* FETCH USERS TAB */
+/* ------------------------------------------------------------------ */
 
-export async function bootstrapUsersTab() {
-  const centralTenantId = await getCentralTenantId();
-
-  const { actorId } = await authorizeUserAction(null, ["users.view", "view_security"]);
-
-  const centralTenant = await prisma.tenant.findUnique({
-    where: { id: centralTenantId },
-    select: { id: true, name: true },
+export async function fetchUsersTabAction(query: UsersTabQuery = {}): Promise<UsersTabPayload> {
+  const session = await auth.api.getSession({
+    headers: await getSafeRequestHeaders(),
+    asResponse: false,
   });
 
-  const tenantName = centralTenant?.name ?? null;
+  const actor = session?.user;
+  if (!actor?.id) throw new Error("UNAUTHORIZED");
 
-  const memberships = await prisma.membership.findMany({
-    where: {
-      tenantId: centralTenantId,
-      status: MembershipStatus.ACTIVE,
-    },
-    include: {
-      user: true,
-      role: true,
-    },
-    orderBy: { createdAt: "desc" },
-  });
+  const central = await getCentralTenant();
+  const authz = await authorizeUserAction(["users.view"]);
 
-  type UserForClient = {
-    id: string;
-    name: string | null;
-    email: string;
-    createdAt: string;
-    isActive: boolean;
-    avatarUrl?: string | null;
-    userRoles: {
-      id: string;
-      role: { key: string; name: string };
-      tenantId: string | null;
-    }[];
+  const contextScope: RoleScope = authz.actorScope;
+
+  // ✅ memberships are always queried by a REAL tenantId string (never null)
+  const baseTenantId =
+    contextScope === RoleScope.CENTRAL ? central.id : (authz.actorTenantId as string);
+
+  // CENTRAL can browse another tenant via query.tenantId
+  const browseTenantId =
+    contextScope === RoleScope.CENTRAL && query.tenantId ? String(query.tenantId) : null;
+
+  const effectiveMembershipTenantId = browseTenantId ?? baseTenantId;
+
+  const page = Math.max(1, Number(query.page ?? 1));
+  const pageSize = Math.min(200, Math.max(1, Number(query.pageSize ?? 10)));
+  const skip = (page - 1) * pageSize;
+
+  const search = String(query.search ?? "").trim();
+  const sortCol = (query.sortCol ?? "createdAt") as UsersTabQuery["sortCol"];
+  const sortDir = (query.sortDir ?? "desc") as UsersTabQuery["sortDir"];
+
+  const where: Prisma.MembershipWhereInput = {
+    tenantId: effectiveMembershipTenantId, // ✅ always string
+    status: MembershipStatus.ACTIVE,
+    ...(search
+      ? {
+          user: {
+            OR: [
+              { name: { contains: search, mode: "insensitive" } },
+              { email: { contains: search, mode: "insensitive" } },
+            ],
+          },
+        }
+      : {}),
   };
 
-  const usersMap = new Map<string, UserForClient>();
+  const orderByUser =
+    sortCol === "name"
+      ? [{ user: { name: sortDir } }, { id: "desc" as const }]
+      : sortCol === "email"
+        ? [{ user: { email: sortDir } }, { id: "desc" as const }]
+        : sortCol === "isActive"
+          ? [{ user: { isActive: sortDir } }, { id: "desc" as const }]
+          : [{ user: { createdAt: sortDir } }, { id: "desc" as const }];
 
-  for (const m of memberships) {
-    const u = m.user;
+  const [agg, memberships, assignableRoles] = await Promise.all([
+    // ✅ safer than count() if client extensions exist
+    prisma.membership.aggregate({ where, _count: { _all: true } }),
+    prisma.membership.findMany({
+      where,
+      include: { user: true, role: true },
+      skip,
+      take: pageSize,
+      orderBy: orderByUser as any,
+    }),
+    prisma.role.findMany({
+      where:
+        contextScope === RoleScope.CENTRAL
+          ? {
+              scope: RoleScope.CENTRAL,
+              NOT: { key: "central_superadmin" },
+            }
+          : {
+              scope: RoleScope.TENANT,
+              tenantId: baseTenantId,
+              NOT: { key: "tenant_superadmin" },
+            },
+      select: { id: true, key: true, name: true, scope: true },
+      orderBy: { name: "asc" },
+    }),
+  ]);
 
-    if (!usersMap.has(u.id)) {
-      usersMap.set(u.id, {
-        id: u.id,
-        name: u.name,
-        email: u.email,
-        createdAt: u.createdAt.toISOString(),
-        isActive: u.isActive ?? true,
-        avatarUrl: (u as any).avatarUrl ?? (u as any).image ?? null,
-        userRoles: [],
-      });
-    }
+  const totalEntries = agg._count._all;
 
-    if (m.role) {
-      usersMap.get(u.id)!.userRoles.push({
-        id: m.id,
-        role: { key: m.role.key, name: m.role.name },
-        tenantId: m.tenantId,
-      });
-    }
-  }
-
-  const users = Array.from(usersMap.values());
-
-  const assignableRolesRaw = await prisma.role.findMany({
-    where: { tenantId: null },
-    select: { id: true, key: true, name: true },
-    orderBy: { name: "asc" },
-  });
-
-  const assignableRoles = assignableRolesRaw.map((r) => ({
-    id: r.id,
-    key: r.key,
-    name: r.name,
-  }));
-
-  const centralRoleMap: Record<string, string> = assignableRoles.reduce((acc, r) => {
-    acc[r.id] = r.name;
-    return acc;
-  }, {} as Record<string, string>);
-
-  const prismaAny = prisma as any;
-
-  const companySettings = prismaAny.companySettings
-    ? await prismaAny.companySettings.findFirst({ where: { tenantId: centralTenantId } })
-    : null;
-
-  const brandingSettings = prismaAny.brandingSettings
-    ? await prismaAny.brandingSettings.findFirst({ where: { tenantId: centralTenantId } })
-    : null;
+  const tenantName =
+    contextScope === RoleScope.CENTRAL
+      ? (browseTenantId ? await getTenantNameById(browseTenantId) : central.name)
+      : await getTenantNameById(effectiveMembershipTenantId);
 
   return {
-    users,
-    assignableRoles,
-    centralRoleMap,
-    currentUserId: actorId,
-    tenantId: null,
+    users: memberships.map((m) => ({
+      id: m.user.id,
+      name: m.user.name,
+      email: m.user.email,
+      isActive: !!m.user.isActive,
+      createdAt: m.user.createdAt.toISOString(),
+      avatarUrl: m.user.avatarUrl || (m.user as any).image || null,
+      userRoles: [
+        {
+          id: m.id,
+          roleId: m.roleId,
+          role: {
+            key: m.role?.key ?? "unknown",
+            name: m.role?.name ?? "Unknown Role",
+            scope: m.role?.scope as "CENTRAL" | "TENANT" | undefined,
+          },
+          tenantId: m.tenantId, // ✅ always string
+        },
+      ],
+    })),
+    totalEntries,
+    assignableRoles: assignableRoles.map((r) => ({
+      id: r.id,
+      key: r.key,
+      name: r.name,
+      scope: r.scope as "CENTRAL" | "TENANT",
+    })),
+    currentUserId: actor.id,
+
+    contextScope: contextScope as "CENTRAL" | "TENANT",
+    tenantId: contextScope === RoleScope.CENTRAL ? null : effectiveMembershipTenantId,
     tenantName,
-    companySettings,
-    brandingSettings,
+
+    companySettings: null,
+    brandingSettings: null,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* BOOTSTRAP USERS TAB */
+/* ------------------------------------------------------------------ */
+
+export async function bootstrapUsersTab(rawQuery: any): Promise<UsersTabPayload> {
+  return fetchUsersTabAction({
+    tenantId: rawQuery?.tenantId ?? null,
+    page: rawQuery?.page ?? 1,
+    pageSize: rawQuery?.pageSize ?? 10,
+    sortCol: rawQuery?.sortCol ?? "createdAt",
+    sortDir: rawQuery?.sortDir ?? "desc",
+    search: rawQuery?.search ?? "",
+  });
 }

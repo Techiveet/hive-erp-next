@@ -1,8 +1,8 @@
+// app/(dashboard)/security/users/_components/users-tab-client.tsx
 "use client";
 
 import * as React from "react";
-import type { ColumnDef } from "@tanstack/react-table";
-import { useRouter } from "next/navigation";
+import type { ColumnDef, RowSelectionState } from "@tanstack/react-table";
 import { toast } from "sonner";
 
 import {
@@ -33,33 +33,22 @@ import {
   X,
 } from "lucide-react";
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
-import {
-  createOrUpdateUserAction,
-  deleteUserAction,
-  toggleUserActiveAction,
-} from "../users-actions";
+import { createOrUpdateUserAction, deleteUserAction, toggleUserActiveAction, fetchUsersTabAction } from "../users-actions";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  DataTable,
-  type CompanySettingsInfo,
-  type BrandingSettingsInfo,
-} from "@/components/datatable/data-table";
+import { DataTable, type CompanySettingsInfo, type BrandingSettingsInfo } from "@/components/datatable/data-table";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 
-// --- Types ---
-export type RoleLite = { id: string; key: string; name: string };
+export type RoleLite = {
+  id: string;
+  key: string;
+  name: string;
+  scope: "CENTRAL" | "TENANT";
+};
 
 export type UserForClient = {
   id: string;
@@ -70,30 +59,41 @@ export type UserForClient = {
   avatarUrl?: string | null;
   userRoles: {
     id: string;
-    role: { key: string; name: string };
-    tenantId: string | null;
+    roleId: string | null;
+    role: { key: string; name: string; scope?: "CENTRAL" | "TENANT" };
+    tenantId: string; // ✅ always string
   }[];
+};
+
+type Query = {
+  page: number;
+  pageSize: number;
+  sortCol?: string;
+  sortDir?: "asc" | "desc";
+  search?: string;
 };
 
 type Props = {
   users: UserForClient[];
-  assignableRoles: RoleLite[];
-  centralRoleMap: Record<string, string>;
+  totalEntries: number;
+  assignableRoles?: RoleLite[];
   currentUserId: string;
-  tenantId: string | null;
+
+  tenantId: string | null; // CENTRAL => null (UI)
   tenantName: string | null;
+
+  contextScope: "CENTRAL" | "TENANT";
+
   permissions: string[];
   companySettings?: CompanySettingsInfo | null;
   brandingSettings?: BrandingSettingsInfo | null;
 
-  // ✅ NEW
-  reloadUsers: () => Promise<void>;
+  onQueryChangeFromParent?: (updates: any) => void;
+  loadingFromParent?: boolean;
 };
 
-// --- Helpers ---
 function generateStrongPassword(length = 12) {
-  const chars =
-    "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*";
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%^&*";
   return Array.from({ length }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
 
@@ -105,7 +105,6 @@ function initials(name?: string | null, email?: string) {
   return src[0]!.toUpperCase();
 }
 
-// Hydration-safe date formatter
 const createdAtFormatter = new Intl.DateTimeFormat("en-GB", {
   year: "numeric",
   month: "2-digit",
@@ -121,30 +120,44 @@ function formatCreatedAt(dateStr: string) {
   }
 }
 
-export function UsersTabClient({
-  users,
-  assignableRoles,
-  centralRoleMap,
-  currentUserId,
-  tenantId,
-  tenantName,
-  permissions = [],
-  companySettings,
-  brandingSettings,
-  reloadUsers,
-}: Props) {
-  const router = useRouter(); // keep if you use navigation elsewhere
+export function UsersTabClient(props: Props) {
+  const {
+    users: initialUsers,
+    totalEntries: initialTotal,
+    assignableRoles = [],
+    currentUserId,
+    tenantId,
+    tenantName,
+    contextScope,
+    permissions = [],
+    companySettings,
+    brandingSettings,
+  } = props;
+
+  const isCentralAdmin = contextScope === "CENTRAL";
+
+  const [rows, setRows] = React.useState<UserForClient[]>(initialUsers);
+  const [totalEntries, setTotalEntries] = React.useState<number>(initialTotal);
+  const [loading, setLoading] = React.useState(false);
   const [isPending, startTransition] = React.useTransition();
 
   const has = (key: string) => permissions.includes(key);
-
   const canViewUsers = has("users.view") || has("manage_security");
   const canCreateUsers = has("users.create") || has("manage_security");
   const canUpdateUsers = has("users.update") || has("manage_security");
   const canDeleteUsers = has("users.delete") || has("manage_security");
   const canToggleUserActive = canUpdateUsers;
 
-  const isTenantContext = !!tenantId;
+  const [query, setQuery] = React.useState<Query>({
+    page: 1,
+    pageSize: 10,
+    sortCol: "createdAt",
+    sortDir: "desc",
+    search: "",
+  });
+
+  const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({});
+  const [selectedRowsOnPage, setSelectedRowsOnPage] = React.useState<UserForClient[]>([]);
 
   const [createDialogOpen, setCreateDialogOpen] = React.useState(false);
   const [viewDialogOpen, setViewDialogOpen] = React.useState(false);
@@ -154,16 +167,6 @@ export function UsersTabClient({
   const [editingUser, setEditingUser] = React.useState<UserForClient | null>(null);
   const [viewUser, setViewUser] = React.useState<UserForClient | null>(null);
 
-  const isSuperadminEditing = React.useMemo(() => {
-    if (!editingUser) return false;
-    return editingUser.userRoles.some((ur) =>
-      tenantId
-        ? ur.role.key === "tenant_superadmin" && ur.tenantId === tenantId
-        : ur.role.key === "central_superadmin"
-    );
-  }, [editingUser, tenantId]);
-
-  // Form State
   const [formName, setFormName] = React.useState("");
   const [formEmail, setFormEmail] = React.useState("");
   const [formPassword, setFormPassword] = React.useState("");
@@ -174,31 +177,38 @@ export function UsersTabClient({
   const [showPassword, setShowPassword] = React.useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = React.useState(false);
 
+  const isEdit = !!editingUser;
+
+  // ✅ FIX: roles dropdown strictly based on server contextScope
+  const modalAssignableRoles = React.useMemo(() => {
+    return assignableRoles.filter((r) => (isCentralAdmin ? r.scope === "CENTRAL" : r.scope === "TENANT"));
+  }, [assignableRoles, isCentralAdmin]);
+
+  const safeDefaultRoleId = React.useMemo(() => modalAssignableRoles[0]?.id ?? "", [modalAssignableRoles]);
+
+  const isSuperadminEditing = React.useMemo(() => {
+    if (!editingUser) return false;
+    if (isCentralAdmin) return editingUser.userRoles.some((ur) => ur.role.key === "central_superadmin");
+    return editingUser.userRoles.some((ur) => ur.role.key === "tenant_superadmin" && !!tenantId);
+  }, [editingUser, isCentralAdmin, tenantId]);
+
   const isProtectedUser = React.useCallback(
     (u: UserForClient) => {
       const isSelf = u.id === currentUserId;
       const isCentralSuperadmin = u.userRoles.some((ur) => ur.role.key === "central_superadmin");
-      const isTenantSuperadmin = tenantId
-        ? u.userRoles.some(
-            (ur) => ur.role.key === "tenant_superadmin" && ur.tenantId === tenantId
-          )
-        : false;
-
+      const isTenantSuperadmin = !isCentralAdmin && u.userRoles.some((ur) => ur.role.key === "tenant_superadmin");
       return isSelf || isCentralSuperadmin || isTenantSuperadmin;
     },
-    [currentUserId, tenantId]
+    [currentUserId, isCentralAdmin]
   );
 
   function getPrimaryRoleName(u: UserForClient): string {
-    if (tenantId) {
-      const r = u.userRoles.find((ur) => ur.tenantId === tenantId);
-      return r?.role.name ?? "Member";
+    if (isCentralAdmin) {
+      const centralRole = u.userRoles.find((ur) => ur.role.scope === "CENTRAL" || ur.role.key.startsWith("central_"));
+      return centralRole?.role.name ?? "Central User";
     }
-
-    const centralLike = u.userRoles.find((ur) => ur.role.key.startsWith("central_"));
-    if (centralLike) return centralLike.role.name;
-
-    return u.userRoles[0]?.role.name ?? "User";
+    const tenantRole = u.userRoles.find((ur) => ur.role.scope === "TENANT" || ur.role.key.startsWith("tenant_"));
+    return tenantRole?.role.name ?? "Member";
   }
 
   function resetForm() {
@@ -206,7 +216,7 @@ export function UsersTabClient({
     setFormEmail("");
     setFormPassword("");
     setFormConfirmPassword("");
-    setFormRoleId(assignableRoles[0]?.id ?? "");
+    setFormRoleId(safeDefaultRoleId);
     setFormAvatar(null);
     setShowPassword(false);
     setShowConfirmPassword(false);
@@ -226,16 +236,14 @@ export function UsersTabClient({
     setFormName(user.name || "");
     setFormEmail(user.email);
     setFormAvatar(user.avatarUrl ?? null);
-    setShowPassword(false);
-    setShowConfirmPassword(false);
 
-    const isSuper = user.userRoles.some((ur) =>
-      tenantId
-        ? ur.role.key === "tenant_superadmin" && ur.tenantId === tenantId
-        : ur.role.key === "central_superadmin"
-    );
+    const rolePick = isCentralAdmin
+      ? user.userRoles.find((ur) => ur.role.key.startsWith("central_"))
+      : user.userRoles.find((ur) => ur.role.key.startsWith("tenant_"));
 
-    if (isSuper) {
+    setFormRoleId(rolePick?.roleId ?? safeDefaultRoleId);
+
+    if (isSuperadminEditing) {
       setFormPassword("********");
       setFormConfirmPassword("********");
     } else {
@@ -243,11 +251,6 @@ export function UsersTabClient({
       setFormConfirmPassword("");
     }
 
-    const primaryRoleName = getPrimaryRoleName(user);
-    const roleEntry = Object.entries(centralRoleMap).find(([, name]) => name === primaryRoleName);
-    const resolvedRoleId = roleEntry ? roleEntry[0] : undefined;
-
-    setFormRoleId(resolvedRoleId ?? "");
     setCreateDialogOpen(true);
   }
 
@@ -267,22 +270,70 @@ export function UsersTabClient({
 
   function handlePickAvatar() {
     if (typeof window === "undefined") return;
-
     window.dispatchEvent(
       new CustomEvent("open-file-manager", {
         detail: {
           filter: "images" as const,
-          onSelect: (file: { url: string; id?: string; name?: string }) => {
-            setFormAvatar(file.url);
-          },
+          onSelect: (file: { url: string }) => setFormAvatar(file.url),
         },
       })
     );
   }
 
+  async function refetch(nextQuery: Query) {
+    setLoading(true);
+    try {
+      const payload = await fetchUsersTabAction({
+        // ✅ CENTRAL context: don't pass null tenantId to memberships; server will use central tenant partition
+        tenantId: undefined,
+        page: nextQuery.page,
+        pageSize: nextQuery.pageSize,
+        sortCol: (nextQuery.sortCol as any) ?? "createdAt",
+        sortDir: nextQuery.sortDir ?? "desc",
+        search: nextQuery.search ?? "",
+      });
+
+      setRows(payload.users);
+      setTotalEntries(payload.totalEntries);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runQuery(updates: Partial<Query>) {
+    const next: Query = {
+      ...query,
+      ...updates,
+      page:
+        updates.search !== undefined ||
+        updates.pageSize !== undefined ||
+        updates.sortCol !== undefined ||
+        updates.sortDir !== undefined
+          ? 1
+          : updates.page ?? query.page,
+    };
+
+    setQuery(next);
+    setRowSelection({});
+    setSelectedRowsOnPage([]);
+
+    try {
+      await refetch(next);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to load users.");
+    }
+  }
+
+  async function reloadCurrentQuery() {
+    try {
+      await refetch(query);
+    } catch (e: any) {
+      toast.error(e?.message || "Failed to reload users.");
+    }
+  }
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const isEdit = !!editingUser;
 
     if (isEdit && !canUpdateUsers) return;
     if (!isEdit && !canCreateUsers) return;
@@ -299,6 +350,11 @@ export function UsersTabClient({
       return;
     }
 
+    if (!isSuperadminEditing && !formRoleId) {
+      toast.error("Please select a role");
+      return;
+    }
+
     const passwordToSend = skipPasswordChange ? null : formPassword || null;
 
     startTransition(async () => {
@@ -306,18 +362,16 @@ export function UsersTabClient({
         await createOrUpdateUserAction({
           id: editingUser?.id ?? null,
           name: formName.trim(),
-          email: formEmail.trim(),
+          email: formEmail.trim().toLowerCase(),
           password: passwordToSend,
           roleId: formRoleId,
-          tenantId: tenantId ?? null,
+          tenantId: isCentralAdmin ? null : tenantId, // server enforces anyway
           avatarUrl: formAvatar,
         });
 
         toast.success(isEdit ? "User updated successfully" : "User created");
         setCreateDialogOpen(false);
-
-        // ✅ IMPORTANT: refresh users list immediately
-        await reloadUsers();
+        await reloadCurrentQuery();
       } catch (err: any) {
         toast.error(err?.message || "Failed to save user.");
       }
@@ -338,7 +392,7 @@ export function UsersTabClient({
         await Promise.all(
           bulkDeletableUsers.map(async (u) => {
             try {
-              await deleteUserAction({ userId: u.id, tenantId });
+              await deleteUserAction({ userId: u.id });
             } catch {
               errors++;
             }
@@ -350,9 +404,9 @@ export function UsersTabClient({
 
         setBulkDialogOpen(false);
         setBulkDeletableUsers([]);
-
-        // ✅ IMPORTANT: refresh users list immediately
-        await reloadUsers();
+        setRowSelection({});
+        setSelectedRowsOnPage([]);
+        await reloadCurrentQuery();
       } catch {
         toast.error("Failed to delete selected users.");
       }
@@ -361,25 +415,6 @@ export function UsersTabClient({
 
   const columns = React.useMemo<ColumnDef<UserForClient>[]>(() => {
     return [
-      {
-        id: "select",
-        header: ({ table }) => (
-          <div className="flex justify-center">
-            <Checkbox
-              checked={
-                table.getIsAllPageRowsSelected() ||
-                (table.getIsSomePageRowsSelected() && "indeterminate")
-              }
-              onCheckedChange={(val) => table.toggleAllPageRowsSelected(!!val)}
-            />
-          </div>
-        ),
-        cell: ({ row }) => (
-          <div className="flex justify-center">
-            <Checkbox checked={row.getIsSelected()} onCheckedChange={(val) => row.toggleSelected(!!val)} />
-          </div>
-        ),
-      },
       {
         id: "name",
         accessorFn: (row) => `${row.name ?? ""} ${row.email}`,
@@ -400,7 +435,6 @@ export function UsersTabClient({
                   {initials(u.name, u.email)}
                 </div>
               )}
-
               <div className="flex flex-col">
                 <span className="text-sm font-medium text-foreground">{u.name || "Unknown"}</span>
                 <span className="text-xs text-muted-foreground">{u.email}</span>
@@ -435,33 +469,18 @@ export function UsersTabClient({
                 onCheckedChange={() =>
                   startTransition(async () => {
                     try {
-                      await toggleUserActiveAction({
-                        userId: u.id,
-                        newActive: !u.isActive,
-                        tenantId,
-                      });
-
+                      await toggleUserActiveAction({ userId: u.id, newActive: !u.isActive });
                       toast.success(`User ${!u.isActive ? "activated" : "deactivated"}`);
-
-                      // ✅ IMPORTANT: refresh users list immediately
-                      await reloadUsers();
+                      await reloadCurrentQuery();
                     } catch (err: any) {
                       const msg = err?.message || "";
-
-                      if (msg.includes("CANNOT_DEACTIVATE_LAST_USER")) {
-                        toast.error("You cannot deactivate the last active admin/user in this context.");
-                      } else if (msg.includes("CANNOT_DEACTIVATE_SELF")) {
-                        toast.error("You cannot deactivate your own account.");
-                      } else if (msg.includes("FORBIDDEN_INSUFFICIENT_PERMISSIONS")) {
-                        toast.error("You don't have permission to change this user.");
-                      } else {
-                        toast.error("Failed to update user status.");
-                      }
+                      if (msg.includes("CANNOT_DEACTIVATE_SELF")) toast.error("You cannot deactivate your own account.");
+                      else if (msg.includes("FORBIDDEN_INSUFFICIENT_PERMISSIONS")) toast.error("No permission.");
+                      else toast.error("Failed to update user status.");
                     }
                   })
                 }
               />
-
               <span className={`text-xs font-medium ${u.isActive ? "text-emerald-600" : "text-muted-foreground"}`}>
                 {u.isActive ? "Active" : "Inactive"}
               </span>
@@ -473,9 +492,7 @@ export function UsersTabClient({
         id: "createdAt",
         header: "Joined",
         accessorFn: (row) => formatCreatedAt(row.createdAt),
-        cell: ({ row }) => (
-          <span className="text-xs text-muted-foreground">{formatCreatedAt(row.original.createdAt)}</span>
-        ),
+        cell: ({ row }) => <span className="text-xs text-muted-foreground">{formatCreatedAt(row.original.createdAt)}</span>,
       },
       {
         id: "actions",
@@ -540,11 +557,9 @@ export function UsersTabClient({
                       onClick={() =>
                         startTransition(async () => {
                           try {
-                            await deleteUserAction({ userId: u.id, tenantId });
+                            await deleteUserAction({ userId: u.id });
                             toast.success("User deleted");
-
-                            // ✅ IMPORTANT: refresh users list immediately
-                            await reloadUsers();
+                            await reloadCurrentQuery();
                           } catch (e: any) {
                             toast.error(e?.message || "Failed to delete user.");
                           }
@@ -559,75 +574,90 @@ export function UsersTabClient({
             </div>
           );
         },
+        meta: { exportable: false, printable: false, align: "right" },
       },
     ];
-  }, [
-    isProtectedUser,
-    isPending,
-    tenantId,
-    canToggleUserActive,
-    canUpdateUsers,
-    canDeleteUsers,
-    canViewUsers,
-    reloadUsers,
-  ]);
+  }, [canDeleteUsers, canToggleUserActive, canUpdateUsers, canViewUsers, isPending, isProtectedUser]);
 
   return (
     <div className="space-y-4">
-      {/* HEADER */}
       <div className="flex flex-wrap items-center justify-between gap-4 p-1">
         <div>
-          <h2 className="text-lg font-bold tracking-tight">{isTenantContext ? "Team Members" : "System Users"}</h2>
+          <h2 className="text-lg font-bold tracking-tight">{isCentralAdmin ? "System Users" : "Team Members"}</h2>
           <p className="text-sm text-muted-foreground">Manage access for {tenantName || "the platform"}.</p>
         </div>
 
-        {canCreateUsers && (
-          <Button onClick={openCreate} className="bg-indigo-600 text-white shadow-sm hover:bg-indigo-700">
-            <PlusCircle className="mr-2 h-4 w-4" />
-            Add User
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            onClick={async () => {
+              setRowSelection({});
+              setSelectedRowsOnPage([]);
+              await reloadCurrentQuery();
+            }}
+            className="gap-2"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Reload
           </Button>
-        )}
+
+          {canCreateUsers && (
+            <Button onClick={openCreate} className="bg-indigo-600 text-white shadow-sm hover:bg-indigo-700">
+              <PlusCircle className="mr-2 h-4 w-4" />
+              Add User
+            </Button>
+          )}
+        </div>
       </div>
 
-      {/* TABLE */}
       <div className="rounded-md border bg-card shadow-sm">
-        <DataTable
+        <DataTable<UserForClient, any>
           columns={columns}
-          data={users}
-          searchColumnId="name"
-          searchPlaceholder="Filter..."
-          onRefresh={reloadUsers} // ✅ IMPORTANT: re-fetch, not router.refresh
+          data={rows}
           fileName="users"
-          companySettings={companySettings ?? undefined}
-          brandingSettings={
-            brandingSettings?.darkLogoUrl ? { darkLogoUrl: brandingSettings.darkLogoUrl } : undefined
-          }
-          onDeleteRows={async (rows) => {
+          serverMode
+          totalEntries={totalEntries}
+          loading={loading}
+          searchColumnId="email"
+          searchPlaceholder="Search by email..."
+          pageIndex={query.page}
+          pageSize={query.pageSize}
+          onQueryChange={(q) => runQuery(q as Partial<Query>)}
+          enableRowSelection
+          selectedRowIds={rowSelection}
+          onSelectionChange={({ selectedRowIds, selectedRowsOnPage }) => {
+            setRowSelection(selectedRowIds);
+            setSelectedRowsOnPage(selectedRowsOnPage as UserForClient[]);
+          }}
+          onDeleteRows={() => {
             if (!canDeleteUsers) {
               toast.error("No permission to delete.");
               return;
             }
-            setBulkDeletableUsers(rows.filter((u) => !isProtectedUser(u)));
+            const deletable = selectedRowsOnPage.filter((u) => !isProtectedUser(u));
+            setBulkDeletableUsers(deletable);
             setBulkDialogOpen(true);
           }}
+          companySettings={companySettings ?? undefined}
+          brandingSettings={brandingSettings ?? undefined}
         />
       </div>
 
-      {/* CREATE / EDIT DIALOG */}
+      {/* Create/Edit Dialog */}
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className="sm:max-w-xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <UserIcon className="h-5 w-5 text-primary" />
-              {editingUser ? "Edit User" : "Create User"}
+              {isEdit ? "Edit User" : "Create User"}
             </DialogTitle>
-            <DialogDescription>Assign a role, credentials and profile photo.</DialogDescription>
+            <DialogDescription>
+              {isCentralAdmin ? "Assign central system role and credentials." : "Assign tenant role and credentials."}
+            </DialogDescription>
           </DialogHeader>
 
           <form onSubmit={handleSubmit} className="space-y-5">
-            {/* Avatar & basic info */}
             <div className="grid gap-4 md:grid-cols-[220px,1fr]">
-              {/* Avatar card */}
               <div className="flex flex-col items-center gap-3 rounded-lg border bg-muted/40 p-4">
                 <div className="relative h-20 w-20">
                   <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full border bg-background shadow-sm">
@@ -635,12 +665,9 @@ export function UsersTabClient({
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={formAvatar} alt={formName || formEmail || "Avatar"} className="h-full w-full object-cover" />
                     ) : (
-                      <span className="text-xl font-semibold text-primary">
-                        {initials(formName, formEmail)}
-                      </span>
+                      <span className="text-xl font-semibold text-primary">{initials(formName, formEmail)}</span>
                     )}
                   </div>
-
                   {formAvatar && (
                     <button
                       type="button"
@@ -651,7 +678,6 @@ export function UsersTabClient({
                     </button>
                   )}
                 </div>
-
                 <div className="flex flex-col gap-2 text-center">
                   <p className="text-xs text-muted-foreground">Profile photo (optional)</p>
                   <Button type="button" size="sm" variant="outline" onClick={handlePickAvatar} className="justify-center">
@@ -661,70 +687,53 @@ export function UsersTabClient({
                 </div>
               </div>
 
-              {/* Name / Email / Role */}
               <div className="space-y-4">
                 <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div className="space-y-1">
                     <label className="text-xs font-medium uppercase text-muted-foreground">Name</label>
-                    <input
-                      className="w-full rounded border bg-background p-2 text-sm"
-                      value={formName}
-                      onChange={(e) => setFormName(e.target.value)}
-                      required
-                    />
+                    <input className="w-full rounded border bg-background p-2 text-sm" value={formName} onChange={(e) => setFormName(e.target.value)} required />
                   </div>
-
                   <div className="space-y-1">
                     <label className="text-xs font-medium uppercase text-muted-foreground">Email</label>
-                    <input
-                      type="email"
-                      className="w-full rounded border bg-background p-2 text-sm"
-                      value={formEmail}
-                      onChange={(e) => setFormEmail(e.target.value)}
-                      required
-                      disabled={!!editingUser}
-                    />
+                    <input type="email" className="w-full rounded border bg-background p-2 text-sm" value={formEmail} onChange={(e) => setFormEmail(e.target.value)} required disabled={isEdit} />
                   </div>
                 </div>
 
                 <div className="space-y-1">
                   <label className="text-xs font-medium uppercase text-muted-foreground">Role</label>
-
                   <select
                     className="w-full rounded border bg-background p-2 text-sm"
                     value={formRoleId}
                     onChange={(e) => setFormRoleId(e.target.value)}
-                    required
+                    required={!isSuperadminEditing}
                     disabled={isSuperadminEditing}
                   >
-                    {!isSuperadminEditing && <option value="">Select role...</option>}
+                    <option value="">Select {isCentralAdmin ? "system" : "tenant"} role...</option>
 
-                    {isSuperadminEditing && editingUser && formRoleId && (
-                      <option value={formRoleId}>{getPrimaryRoleName(editingUser)}</option>
-                    )}
-
-                    {!isSuperadminEditing &&
-                      assignableRoles.map((r) => (
+                    {modalAssignableRoles.length === 0 ? (
+                      <option value="" disabled>
+                        No {isCentralAdmin ? "system" : "tenant"} roles available. Please create roles first.
+                      </option>
+                    ) : (
+                      modalAssignableRoles.map((r) => (
                         <option key={r.id} value={r.id}>
                           {r.name}
                         </option>
-                      ))}
+                      ))
+                    )}
                   </select>
 
-                  {isSuperadminEditing && (
-                    <p className="mt-1 text-[11px] text-amber-600">
-                      Super administrator role cannot be changed.
-                    </p>
+                  {isSuperadminEditing && <p className="mt-1 text-[11px] text-amber-600">Super administrator role cannot be changed.</p>}
+                  {modalAssignableRoles.length === 0 && !isSuperadminEditing && (
+                    <p className="mt-1 text-[11px] text-red-600">No roles available. Please create roles first.</p>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Passwords */}
             <div className="space-y-4 rounded-lg border bg-muted/30 p-4">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold uppercase text-muted-foreground">Credentials</p>
-
                 {!isSuperadminEditing && (
                   <Button type="button" variant="outline" size="sm" onClick={handleGeneratePassword}>
                     <RefreshCw className="mr-1 h-3 w-3" /> Generate Password
@@ -734,25 +743,22 @@ export function UsersTabClient({
 
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div className="space-y-1">
-                  <label className="text-xs font-medium uppercase text-muted-foreground">
-                    {editingUser ? "New Password" : "Password"}
-                  </label>
-
+                  <label className="text-xs font-medium uppercase text-muted-foreground">{isEdit ? "New Password" : "Password"}</label>
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
                       className="w-full rounded border bg-background p-2 pr-10 text-sm"
                       value={formPassword}
                       onChange={(e) => setFormPassword(e.target.value)}
-                      placeholder={editingUser ? "Leave blank to keep" : ""}
-                      disabled={isSuperadminEditing && !!editingUser}
+                      placeholder={isEdit ? "Leave blank to keep" : ""}
+                      disabled={isSuperadminEditing && isEdit}
+                      required={!isEdit}
                     />
-
                     <button
                       type="button"
                       className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
                       onClick={() => setShowPassword((v) => !v)}
-                      disabled={isSuperadminEditing && !!editingUser}
+                      disabled={isSuperadminEditing && isEdit}
                     >
                       {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
@@ -760,24 +766,21 @@ export function UsersTabClient({
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-xs font-medium uppercase text-muted-foreground">
-                    Confirm Password
-                  </label>
-
+                  <label className="text-xs font-medium uppercase text-muted-foreground">Confirm Password</label>
                   <div className="relative">
                     <input
                       type={showConfirmPassword ? "text" : "password"}
                       className="w-full rounded border bg-background p-2 pr-10 text-sm"
                       value={formConfirmPassword}
                       onChange={(e) => setFormConfirmPassword(e.target.value)}
-                      disabled={isSuperadminEditing && !!editingUser}
+                      disabled={isSuperadminEditing && isEdit}
+                      required={!isEdit && formPassword.length > 0}
                     />
-
                     <button
                       type="button"
                       className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
                       onClick={() => setShowConfirmPassword((v) => !v)}
-                      disabled={isSuperadminEditing && !!editingUser}
+                      disabled={isSuperadminEditing && isEdit}
                     >
                       {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </button>
@@ -785,26 +788,22 @@ export function UsersTabClient({
                 </div>
               </div>
 
-              {isSuperadminEditing && (
-                <p className="pt-1 text-[11px] text-amber-600">
-                  Super administrator password cannot be changed from this screen.
-                </p>
-              )}
+              {isSuperadminEditing && <p className="pt-1 text-[11px] text-amber-600">Super administrator password cannot be changed from this screen.</p>}
             </div>
 
             <div className="mt-2 flex justify-end gap-2 border-t pt-2">
               <Button type="button" variant="ghost" onClick={() => setCreateDialogOpen(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={isPending}>
-                {editingUser ? "Save Changes" : "Create User"}
+              <Button type="submit" disabled={isPending || (!isSuperadminEditing && !formRoleId)}>
+                {isEdit ? "Save Changes" : "Create User"}
               </Button>
             </div>
           </form>
         </DialogContent>
       </Dialog>
 
-      {/* VIEW USER DIALOG */}
+      {/* View Dialog */}
       <Dialog open={viewDialogOpen} onOpenChange={setViewDialogOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -823,9 +822,7 @@ export function UsersTabClient({
                     // eslint-disable-next-line @next/next/no-img-element
                     <img src={viewUser.avatarUrl} alt={viewUser.name || viewUser.email} className="h-full w-full object-cover" />
                   ) : (
-                    <span className="text-xl font-semibold text-primary">
-                      {initials(viewUser.name, viewUser.email)}
-                    </span>
+                    <span className="text-xl font-semibold text-primary">{initials(viewUser.name, viewUser.email)}</span>
                   )}
                 </div>
 
@@ -842,12 +839,10 @@ export function UsersTabClient({
                   <Mail className="h-4 w-4 text-muted-foreground" />
                   <span>{viewUser.email}</span>
                 </div>
-
                 <div className="flex items-center gap-2">
                   <Shield className="h-4 w-4 text-muted-foreground" />
                   <span>{getPrimaryRoleName(viewUser)}</span>
                 </div>
-
                 <div className="flex items-center gap-2">
                   <Calendar className="h-4 w-4 text-muted-foreground" />
                   <span>Joined {formatCreatedAt(viewUser.createdAt)}</span>
@@ -861,7 +856,7 @@ export function UsersTabClient({
                 <div className="flex flex-wrap gap-1">
                   {viewUser.userRoles.map((ur) => (
                     <Badge key={ur.id} variant="secondary" className="text-[10px]">
-                      {ur.role.name}
+                      {ur.role.name} ({ur.role.scope ?? (ur.role.key.startsWith("central_") ? "CENTRAL" : "TENANT")})
                     </Badge>
                   ))}
                 </div>
@@ -877,7 +872,7 @@ export function UsersTabClient({
         </DialogContent>
       </Dialog>
 
-      {/* BULK DELETE CONFIRM */}
+      {/* Bulk Delete */}
       <AlertDialog open={bulkDialogOpen} onOpenChange={setBulkDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

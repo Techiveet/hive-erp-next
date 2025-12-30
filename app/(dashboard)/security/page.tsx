@@ -1,20 +1,22 @@
-import { RoleScope } from "@prisma/client";
+// app/(dashboard)/security/page.tsx
+
 import { SecurityTabsClient } from "./security-tabs-client";
+import { bootstrapRolesTab } from "./roles/roles-actions";
 import { getCurrentSession } from "@/lib/auth-server";
 import { getCurrentUserPermissions } from "@/lib/rbac";
-import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
 
 type TabKey = "users" | "roles" | "permissions";
+
 function safeTab(v: unknown): TabKey | null {
   if (v === "users" || v === "roles" || v === "permissions") return v;
   return null;
 }
 
 type PageProps = {
-  searchParams: Promise<Record<string, string | string[] | undefined>>;
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
 export default async function SecurityPage({ searchParams }: PageProps) {
@@ -23,48 +25,34 @@ export default async function SecurityPage({ searchParams }: PageProps) {
 
   const permissionsList = await getCurrentUserPermissions(null);
 
-  const canEnter =
-    permissionsList.includes("view_security") ||
-    permissionsList.includes("manage_security");
-
+  const canEnter = permissionsList.includes("view_security") || permissionsList.includes("manage_security");
   if (!canEnter) redirect("/");
 
-  // ✅ unwrap the Promise (Next.js 16.1 requirement)
-  const sp = await searchParams;
+  const sp = (await searchParams) ?? {};
   const requestedTab = safeTab(Array.isArray(sp.tab) ? sp.tab[0] : sp.tab) ?? "users";
 
-  // ✅ fetch central roles
-  const roles = await prisma.role.findMany({
-    where: { tenantId: null },
-    orderBy: { createdAt: "asc" },
-    include: {
-      rolePermissions: { include: { permission: true } },
-    },
-  });
+  const canRoles =
+    permissionsList.includes("roles.view") ||
+    permissionsList.includes("manage_roles") ||
+    permissionsList.includes("manage_security") ||
+    permissionsList.includes("view_security");
 
-  const rolesForClient = roles.map((r) => ({
-    id: r.id,
-    key: r.key,
-    name: r.name,
-    scope: r.scope as RoleScope,
-    tenantId: null,
-    permissions: r.rolePermissions.map((rp) => ({
-      id: rp.permission.id,
-      key: rp.permission.key,
-      name: rp.permission.name,
-    })),
-  }));
+  let rolesBootstrap: Awaited<ReturnType<typeof bootstrapRolesTab>> | undefined;
 
-  // ✅ fetch permissions (your schema has NO tenantId here)
-  const allPermissions = await prisma.permission.findMany({
-    orderBy: { key: "asc" },
-  });
+  if (canRoles) {
+    try {
+      rolesBootstrap = await bootstrapRolesTab();
+    } catch {
+      rolesBootstrap = undefined;
+    }
+  }
 
-  const permsForClient = allPermissions.map((p) => ({
-    id: p.id,
-    key: p.key,
-    name: p.name,
-  }));
+  // ✅ REQUIRED props for UsersTab
+  const currentUserId = user.id;
+
+  // ✅ until you wire a real tenant/workspace resolver, keep build-safe fallbacks
+  const tenantId = (user as any)?.tenantId ?? "central";
+  const tenantName = (user as any)?.tenantName ?? "Central";
 
   return (
     <div className="px-4 py-4 lg:px-6 lg:py-6 xl:px-8">
@@ -75,10 +63,12 @@ export default async function SecurityPage({ searchParams }: PageProps) {
       </div>
 
       <SecurityTabsClient
+        tenantId={tenantId}
+        tenantName={tenantName}
+        currentUserId={currentUserId}
         permissionsList={permissionsList}
-        roles={rolesForClient}
-        allPermissions={permsForClient}
         defaultTab={requestedTab}
+        rolesBootstrap={rolesBootstrap}
       />
     </div>
   );
